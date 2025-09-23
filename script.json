@@ -1,0 +1,38 @@
+{
+  "description" : "",
+  "remoteResource" : null,
+  "icon" : "livephoto",
+  "intentInputTypes" : [
+
+  ],
+  "color" : "rgba(238, 92, 98,1)",
+  "version" : "1.0.0",
+  "author" : null,
+  "localizedDescriptions" : {
+    "en" : "",
+    "de" : "",
+    "pt" : "",
+    "ru" : "",
+    "zh" : "",
+    "it" : "",
+    "fr" : "",
+    "ja" : "",
+    "es" : ""
+  },
+  "runInApp" : false,
+  "name" : "Consumeting",
+  "localizedNames" : {
+    "ru" : "",
+    "zh" : "",
+    "pt" : "",
+    "en" : "",
+    "it" : "",
+    "es" : "",
+    "ja" : "",
+    "fr" : "",
+    "de" : ""
+  },
+  "contributors" : [
+
+  ]
+}
