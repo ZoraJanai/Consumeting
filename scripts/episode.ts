@@ -256,7 +256,7 @@ order = newOrder
 
   const finalUrl = player === "nPlayer" ? "-" + hls : hls.replace("https", "")
   //console.log((player + finalUrl).toLowerCase())
-  Safari.openURL((player + finalUrl).toLowerCase())
+  await Safari.openURL((player + finalUrl).toLowerCase())
 
   const stillUnread = index !== Number(entry.total)
   const cacheEntry: Anime = {
