@@ -255,7 +255,8 @@ order = newOrder
   hideOverlay()
 
   const finalUrl = player === "nPlayer" ? "-" + hls : hls.replace("https", "")
-  console.log((player + finalUrl).toLowerCase())
+  //console.log((player + finalUrl).toLowerCase())
+  Safari.openURL((player + finalUrl).toLowerCase())
 
   const stillUnread = index !== Number(entry.total)
   const cacheEntry: Anime = {
