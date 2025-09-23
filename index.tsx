@@ -8,6 +8,9 @@ import { CachePage } from "./Pages/Cache"
 import { QueuePage } from "./Pages/Queue"
 import { HomePage } from "./Pages/Home"
 import { OverlayHost } from "./Pages/Loading"
+import { STORAGE_KEYS, loadSetting, saveSetting } from "./Pages/Settings"
+import { copyFileFromDocumentsIfExists, loadData, saveData } from "./scripts/data"
+
 
 type TabChildProps = {
   onCacheSaved?: () => void
@@ -87,7 +90,42 @@ function QueueView(props: { onBadgeChange?: (n: number) => void }) {
 }
 function SettingsView() { return <SettingsPage /> }
 
-async function run() {
+
+const MARK = "__init_v1"                // string key
+const DEFAULTS = {
+  [STORAGE_KEYS.VIDEO_PLAYER]: "nPlayer",
+  [STORAGE_KEYS.AUTO_QUALITY]: true,
+  [STORAGE_KEYS.QUALITY_ORDER]: [
+    "-1080p BD","-1080p","-816p chi","-720p",
+    "-default","-auto","-480p","-360p"
+  ],
+  [STORAGE_KEYS.PROVIDER]: "Anilist",
+  [STORAGE_KEYS.CACHE_PATH]: "cache.json",
+  [STORAGE_KEYS.QUEUE_PATH]: "queue.json",
+}
+
+async function ensureFile(p: string) {
+  try { await copyFileFromDocumentsIfExists(p) } catch {}
+  try { if (Array.isArray(await loadData(p))) return } catch {}
+  await saveData(p, [])
+}
+
+export async function bootstrap() {
+  // 👉 use a STRING marker; treat presence as initialized
+  const inited = loadSetting<string>(MARK, "")
+  if (!inited) {
+    Object.entries(DEFAULTS).forEach(([k, v]) => saveSetting(k, v))
+    saveSetting(MARK, "1") // store string, not boolean
+    // coerce paths to string
+    const cachePath = String(loadSetting<string>(STORAGE_KEYS.CACHE_PATH, "cache.json"))
+    const queuePath = String(loadSetting<string>(STORAGE_KEYS.QUEUE_PATH, "queue.json"))
+    await ensureFile(cachePath)
+    await ensureFile(queuePath)
+  }
+}
+
+export async function run() {
+  await bootstrap()
   await Navigation.present({
     element: (
       <ZStack>

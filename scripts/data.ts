@@ -1,7 +1,7 @@
 import { Script } from "scripting"
 import { Anime } from "./cache"
 
-const dataDir = `/scripts/${Script.name}/`
+const dataDir = `/Data/${Script.name}/`
 
 type DownloadAnime = Anime & {links:string[]}
 
