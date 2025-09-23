@@ -319,6 +319,11 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
         setEntry(info)
         await episodeThenUpdate(picked)
       } else { // download
+
+        if (picked > Number(info.total) || 0>= picked){
+          hideOverlay()
+          return
+        }else{
         console.log('inside -1')
         info.episode= String(picked)
         setEntry(info)
@@ -335,12 +340,17 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
         await episodeThenUpdate(-44)
       }
       return
+      }
     }
 
     // 4) Ask twice (-2)
     if (auto === -2) {
       const start = await askNumberOnce(`Start episode for ${info.name}`, info.total, String(current + 1))
       const end = await askNumberOnce(`End episode for ${info.name}`, info.total, String(start))
+      if (start > Number(info.total) || end > Number(info.total) || start > end || 0 >= start ){
+        hideOverlay()
+        return
+      }else{
       info.episode = String(end)
       setEntry(info)
       saveSetting("entry", info)
@@ -353,6 +363,7 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
       saveSetting("queueEntry", info)
       await episodeThenUpdate(-44)
       return
+    }
     }
 
     // 5) Single current only (-3)

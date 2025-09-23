@@ -209,10 +209,8 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
 
   async function animeInfo(anime: Anime, action: string) {
     showOverlay()
-    console.log(action)
-    //console.log(anime)
     const info = await chosenAnime(anime)
-    //console.log(info)
+    console.log(info)
 
     const current = anime.episodes.includes("/")
       ? Number(anime.episodes.split("/")[0])
@@ -252,16 +250,21 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
 
     // 3) Ask once (-1)
     if (auto === -1) {
-      const title = (action === "Choose" || action === "Watch")
+      const title = action === "Choose"
         ? `Episode number for ${info.name}`
         : `End episode for ${info.name}`
 
       let picked = await askNumberOnce(title, info.total, String(current + 1))
-      if (action === "Choose" || action === "Watch") {
+      if (action === "Choose") {
         info.episode = String(picked)
         setEntry(info)
         await episodeThenUpdate(picked)
       } else { // download
+
+        if (picked > Number(info.total) || 0>= picked){
+          hideOverlay()
+          return
+        }else{
         console.log('inside -1')
         info.episode= String(picked)
         setEntry(info)
@@ -278,12 +281,17 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
         await episodeThenUpdate(-44)
       }
       return
+      }
     }
 
     // 4) Ask twice (-2)
     if (auto === -2) {
       const start = await askNumberOnce(`Start episode for ${info.name}`, info.total, String(current + 1))
       const end = await askNumberOnce(`End episode for ${info.name}`, info.total, String(start))
+      if (start > Number(info.total) || end > Number(info.total) || start > end || 0 >= start ){
+        hideOverlay()
+        return
+      }else{
       info.episode = String(end)
       setEntry(info)
       saveSetting("entry", info)
@@ -296,6 +304,7 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
       saveSetting("queueEntry", info)
       await episodeThenUpdate(-44)
       return
+    }
     }
 
     // 5) Single current only (-3)
@@ -323,7 +332,7 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
       return
     }
   }
-
+  
   function askNumberOnce(title: string, total: string, initial: string): Promise<number> {
     return new Promise<number>((resolve) => {
       setSheetTitle(title)

@@ -1,42 +1,42 @@
 {
-  "runInApp" : false,
-  "localizedDescriptions" : {
-    "en" : "",
-    "de" : "",
-    "pt" : "",
-    "ru" : "",
-    "zh" : "",
-    "it" : "",
-    "fr" : "",
-    "ja" : "",
-    "es" : ""
-  },
-  "version" : "1.0.0",
-  "color" : "rgba(238, 92, 98,1)",
-  "contributors" : [
-
-  ],
-  "author" : null,
-  "description" : "",
-  "icon" : "livephoto",
-  "name" : "Consumeting",
   "intentInputTypes" : [
 
   ],
+  "contributors" : [
+
+  ],
+  "icon" : "livephoto",
+  "description" : "",
+  "version" : "1.0.5",
+  "color" : "rgba(238, 92, 98,1)",
   "remoteResource" : {
-    "hash" : "dd5a333cb0b6b06f45c68b9bc22bcfb0",
     "url" : "https:\/\/github.com\/ZoraJanai\/Consumeting",
+    "hash" : "46282a1fedbf6de69995381c46fe94ee",
     "autoUpdateInterval" : null
   },
   "localizedNames" : {
-    "ru" : "",
     "zh" : "",
     "pt" : "",
-    "en" : "",
     "it" : "",
-    "es" : "",
     "ja" : "",
+    "de" : "",
+    "es" : "",
+    "ru" : "",
     "fr" : "",
-    "de" : ""
-  }
+    "en" : ""
+  },
+  "localizedDescriptions" : {
+    "ja" : "",
+    "zh" : "",
+    "es" : "",
+    "it" : "",
+    "ru" : "",
+    "pt" : "",
+    "de" : "",
+    "fr" : "",
+    "en" : ""
+  },
+  "name" : "Consumeting",
+  "runInApp" : false,
+  "author" : null
 }
