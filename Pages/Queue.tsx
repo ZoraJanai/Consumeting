@@ -137,7 +137,7 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
   async function deleteItem(item: DownloadAnime) {
     const next = items.filter(q => q !== item)
     setItems(next)                        // optimistic UI
-    saveSetting("queue.last", next)
+    saveSetting("cache.last", next)
     await saveData(queuePath, next)
   }
 

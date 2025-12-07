@@ -47,7 +47,7 @@ function Example() {
       />
       <CacheView
         badge={cacheBadge}
-        key={`cache-${cacheVersion}`} // ⬅️ force CachePage to remount & reload after saves
+        key={cacheVersion} // ⬅️ force CachePage to remount & reload after saves
         tag={1}
         tabItem={<Label title={"Cache"} systemImage={"clock.fill"} />}
         onCacheSaved={onCacheSaved}
@@ -57,7 +57,7 @@ function Example() {
       
 
       <QueueView
-        key={`queue-${queueVersion}`}
+        key={queueVersion}
         tag={2}
         badge={queueBadge}
         tabItem={<Label title={"Queue"} systemImage={"square.grid.2x2.fill"} />}
