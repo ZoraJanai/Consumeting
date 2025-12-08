@@ -42,8 +42,38 @@ function normalizeQueueItem(x: Partial<DownloadAnime>): DownloadAnime {
 }
 
 function QueueCell({ item }: { item: DownloadAnime }) {
+  // Calculate count from episode string (handles ranges like "1, 3 to 4, 5 to 9, 12")
+  const calculateCount = (episodes: string): number => {
+    if (!episodes || episodes.trim() === "") return 0
+    
+    let total = 0
+    // Split by comma to handle multiple ranges
+    const parts = episodes.split(",").map(s => s.trim())
+    
+    for (const part of parts) {
+      if (part.includes(" to ")) {
+        // Range like "3 to 4"
+        const rangeParts = part.split(" to ").map(s => s.trim()).filter(s => s)
+        if (rangeParts.length === 2) {
+          const start = Number(rangeParts[0])
+          const end = Number(rangeParts[1])
+          if (!isNaN(start) && !isNaN(end) && end >= start) {
+            total += (end - start + 1)
+          }
+        }
+      } else {
+        // Single episode
+        const num = Number(part.trim())
+        if (!isNaN(num) && num > 0) {
+          total += 1
+        }
+      }
+    }
+    
+    return total
+  }
   
-  const count = item.links.length - 1
+  const count = calculateCount(item.episodes)
 
   return (
     <HStack frame={{ height: 256 }}>

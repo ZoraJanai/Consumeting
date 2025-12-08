@@ -73,35 +73,15 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
   const unified = await loadUnified()
   let queue = unified.queue
 
-  // find existing entry
+  // find existing entry by name (case-sensitive exact match)
   const index = queue.findIndex(a => a.name === entry.name)
 
   if (index !== -1) {
+    // Entry with same name exists - merge them into a single queue cell
     // Merge with existing entry
     const existing = queue[index]
     
-    // Parse episode ranges
-    const parseEpisodes = (epStr: string): { start: number, end: number } => {
-      const trimmed = epStr.trim()
-      if (trimmed.includes(" to ")) {
-        const parts = trimmed.split(" to ")
-        const start = Number(parts[0].trim())
-        const end = Number(parts[1].trim())
-        return { start: isNaN(start) ? 0 : start, end: isNaN(end) ? 0 : end }
-      } else {
-        const num = Number(trimmed)
-        return { start: isNaN(num) ? 0 : num, end: isNaN(num) ? 0 : num }
-      }
-    }
-
-    const existingEp = parseEpisodes(existing.episodes)
-    const newEp = parseEpisodes(entry.episodes)
-    
-    // Calculate merged range
-    const mergedStart = Math.min(existingEp.start, newEp.start)
-    const mergedEnd = Math.max(existingEp.end, newEp.end)
-    
-    // Merge links arrays - extract episode numbers from links to sort them
+    // Extract episode numbers from links
     // Links format: `ffmpeg -i "${hls}" -c copy ~/Documents/.../...\ -\ ${number}.mp4`
     const extractEpisodeFromLink = (link: string): number => {
       const match = link.match(/\\ -\ (\d+)\.mp4/)
@@ -111,12 +91,14 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
     // Keep mkdir from existing (first element)
     const mergedLinks: string[] = [existing.links[0]] // keep mkdir command
     const linkMap = new Map<number, string>() // episode number -> link
+    const episodeSet = new Set<number>() // all episode numbers
     
     // Add all links from existing (skip mkdir)
     for (let i = 1; i < existing.links.length; i++) {
       const epNum = extractEpisodeFromLink(existing.links[i])
       if (epNum > 0) {
         linkMap.set(epNum, existing.links[i])
+        episodeSet.add(epNum)
       }
     }
     
@@ -125,19 +107,52 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
       const epNum = extractEpisodeFromLink(entry.links[i])
       if (epNum > 0) {
         linkMap.set(epNum, entry.links[i])
+        episodeSet.add(epNum)
       }
     }
     
     // Sort by episode number and add to merged links
-    const sortedEpisodes = Array.from(linkMap.keys()).sort((a, b) => a - b)
+    const sortedEpisodes = Array.from(episodeSet).sort((a, b) => a - b)
     for (const epNum of sortedEpisodes) {
       mergedLinks.push(linkMap.get(epNum)!)
     }
     
-    // Create merged entry
-    const mergedEpisodes = mergedStart === mergedEnd 
-      ? String(mergedStart) 
-      : `${mergedStart} to ${mergedEnd}`
+    // Group episodes into continuous ranges
+    const formatEpisodes = (episodes: number[]): string => {
+      if (episodes.length === 0) return ""
+      if (episodes.length === 1) return String(episodes[0])
+      
+      const ranges: string[] = []
+      let rangeStart = episodes[0]
+      let rangeEnd = episodes[0]
+      
+      for (let i = 1; i < episodes.length; i++) {
+        if (episodes[i] === rangeEnd + 1) {
+          // Continuous, extend range
+          rangeEnd = episodes[i]
+        } else {
+          // Gap found, save current range and start new one
+          if (rangeStart === rangeEnd) {
+            ranges.push(String(rangeStart))
+          } else {
+            ranges.push(`${rangeStart} to ${rangeEnd}`)
+          }
+          rangeStart = episodes[i]
+          rangeEnd = episodes[i]
+        }
+      }
+      
+      // Add final range
+      if (rangeStart === rangeEnd) {
+        ranges.push(String(rangeStart))
+      } else {
+        ranges.push(`${rangeStart} to ${rangeEnd}`)
+      }
+      
+      return ranges.join(", ")
+    }
+    
+    const mergedEpisodes = formatEpisodes(sortedEpisodes)
     
     const mergedEntry: DownloadAnime = {
       ...entry, // use new entry's metadata (img, source, etc.)
@@ -150,8 +165,60 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
     queue.splice(index, 1)
     queue.unshift(mergedEntry)
   } else {
-    // add new at front
-    queue.unshift(entry)
+    // New entry - format episodes consistently from links
+    const extractEpisodeFromLink = (link: string): number => {
+      const match = link.match(/\\ -\ (\d+)\.mp4/)
+      return match ? Number(match[1]) : 0
+    }
+    
+    const episodeSet = new Set<number>()
+    for (let i = 1; i < entry.links.length; i++) {
+      const epNum = extractEpisodeFromLink(entry.links[i])
+      if (epNum > 0) {
+        episodeSet.add(epNum)
+      }
+    }
+    
+    const sortedEpisodes = Array.from(episodeSet).sort((a, b) => a - b)
+    
+    // Format episodes into ranges
+    const formatEpisodes = (episodes: number[]): string => {
+      if (episodes.length === 0) return ""
+      if (episodes.length === 1) return String(episodes[0])
+      
+      const ranges: string[] = []
+      let rangeStart = episodes[0]
+      let rangeEnd = episodes[0]
+      
+      for (let i = 1; i < episodes.length; i++) {
+        if (episodes[i] === rangeEnd + 1) {
+          rangeEnd = episodes[i]
+        } else {
+          if (rangeStart === rangeEnd) {
+            ranges.push(String(rangeStart))
+          } else {
+            ranges.push(`${rangeStart} to ${rangeEnd}`)
+          }
+          rangeStart = episodes[i]
+          rangeEnd = episodes[i]
+        }
+      }
+      
+      if (rangeStart === rangeEnd) {
+        ranges.push(String(rangeStart))
+      } else {
+        ranges.push(`${rangeStart} to ${rangeEnd}`)
+      }
+      
+      return ranges.join(", ")
+    }
+    
+    const formattedEntry: DownloadAnime = {
+      ...entry,
+      episodes: formatEpisodes(sortedEpisodes)
+    }
+    
+    queue.unshift(formattedEntry)
   }
 
   await saveUnified({ ...unified, queue })
