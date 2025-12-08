@@ -6,8 +6,7 @@ import {
 import { NumberInputSheet } from "./numberPopout"
 import { getInfoAnilist, getInfoAnimepahe } from "../scripts/search"
 import { downloadEpisode, episodeNumber, getEpisode, QualitiesOrder } from "../scripts/episode"
-import { loadData, saveData } from "../scripts/data"
-import { addCache, addQueue } from "../scripts/cache"
+import { getCache, getQueue, saveCache, saveQueue, addCache, addQueue } from "../scripts/cache"
 import { hideOverlay, showOverlay } from "./Loading"
 import { QualityPickerSheet } from "./QualityPickerSheet"
 import { STORAGE_KEYS } from "./Settings"
@@ -181,53 +180,57 @@ export function AnimeCell({
 }
 
 export function CachePage({ onCacheSaved, onBadgeChange, onQueueSaved}: { onCacheSaved?: () => void; onBadgeChange?: (n:number) => void; onQueueSaved?: ()=> void}) {
-
-  
-  const path = loadSetting("cache.path", "cache.json")
-  const queuePath = loadSetting("queue.path", "queue.json")
+  // Distinct storage keys for this page to avoid overrides
+  const CACHE_KEY = "cache.last.cachepage"
+  const QUEUE_KEY = "queue.last.cachepage"
 
   // 1) Seed UI immediately from last known cache (sync) to avoid empty flash on mount
   const [animes, setAnimes] = useState<Anime[]>(
-    loadSetting<Anime[]>("cache.last", [])   // ← instant seed
+    loadSetting<Anime[]>(CACHE_KEY, [])   // ← instant seed with distinct key
   )
   const [loadedOnce, setLoadedOnce] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false) // for fade
   // progress state (replace your isRefreshing usage)
-const [refreshing, setRefreshing] = useState(false)
-const [refreshTotal, setRefreshTotal] = useState(0)
-const [refreshDone, setRefreshDone] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshTotal, setRefreshTotal] = useState(0)
+  const [refreshDone, setRefreshDone] = useState(0)
 
   const [downloading, setDownloading] = useState(false)
-const [downloadTotal, setDownloadTotal] = useState(0)
-const [downloadDone, setDownloadDone] = useState(0)
+  const [downloadTotal, setDownloadTotal] = useState(0)
+  const [downloadDone, setDownloadDone] = useState(0)
   
-
   const [queue, setQueue] = useState<DownloadAnime[]>(
-    loadSetting<DownloadAnime[]>("queue.last", [])
+    loadSetting<DownloadAnime[]>(QUEUE_KEY, [])
   )
+  
+  // Use ref to prevent loop - track if we're currently loading
+  const isLoadingRef = { current: false }
   
   // Single loader used everywhere. Keeps old list visible while fading.
   const load = async () => {
+    if (isLoadingRef.current) return // Prevent concurrent loads
     try {
+      isLoadingRef.current = true
       setIsRefreshing(true)
-      const cache = await loadData(path)
+      const cache = await getCache()
       const next = Array.isArray(cache) ? cache : []
       setAnimes(next)
-      saveSetting("cache.last", next)       // persist for next mount
+      saveSetting(CACHE_KEY, next)       // persist for next mount with distinct key
     } catch {
       // if we have never loaded and nothing in seed, show empty; otherwise keep showing old list
       if (!loadedOnce && animes.length === 0) setAnimes([])
     } finally {
+      isLoadingRef.current = false
       setLoadedOnce(true)
       setTimeout(() => setIsRefreshing(false), 120) // quick but noticeable fade
     }
   }
 
+  // Load only once on mount - no dependencies to prevent loops
   useEffect(() => {
-    // Initial fetch (no empty flash because we seeded above)
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path])
+  }, [])
 
   const [showNumberSheet, setShowNumberSheet] = useState(false)
   const [entry, setEntry] = useState<EntryType>(loadSetting("entry", PlaceholderEntry))
@@ -300,8 +303,7 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
       }
       const next = await addCache(cacheEntry)
       setAnimes(next)                      // optimistic UI
-      saveSetting("cache.last", next)
-      await saveData(path, next)
+      saveSetting(CACHE_KEY, next)        // distinct key
       onCacheSaved?.()
       hideOverlay()
       return
@@ -437,17 +439,13 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
     // 1) update CACHE (Anime[])
     const updatedCache = await addCache(cacheItem)            // returns Anime[]
     setAnimes(updatedCache)
-    saveSetting("cache.last", updatedCache)                   // ✅ save the array
-    await saveData(path, updatedCache)
+    saveSetting(CACHE_KEY, updatedCache)                   // ✅ distinct key
     onCacheSaved?.()
 
     // 2) update QUEUE (DownloadAnime[])
-        console.log(queueItem)
     const updatedQueue = await addQueue(queueItem)            // returns DownloadAnime[]
-        console.log(updatedQueue)
     setQueue(updatedQueue)
-    saveSetting("queue.last", updatedQueue)                   // ✅ save the array
-    await saveData(queuePath, updatedQueue)
+    saveSetting(QUEUE_KEY, updatedQueue)                   // ✅ distinct key
     onQueueSaved?.()
 
     hideOverlay()
@@ -458,8 +456,7 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
 })
       const next = await addCache(anime)
       setAnimes(next)                        // optimistic UI
-      saveSetting("cache.last", next)
-      await saveData(path, next)
+      saveSetting(CACHE_KEY, next)          // distinct key
       onCacheSaved?.()
     }
   }
@@ -472,16 +469,16 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
         : { ...anime, isUnread: !item.isUnread, episodes: `${total}/${total}` }
     )
     setAnimes(next)                        // optimistic UI
-    saveSetting("cache.last", next)
-    await saveData(path, next)
+    saveSetting(CACHE_KEY, next)          // distinct key
+    await saveCache(next)                  // save to unified file
     onCacheSaved?.()
   }
 
   async function deleteAnime(anime: Anime) {
     const next = animes.filter(item => item !== anime)
     setAnimes(next)                        // optimistic UI
-    saveSetting("cache.last", next)
-    await saveData(path, next)
+    saveSetting(CACHE_KEY, next)          // distinct key
+    await saveCache(next)                  // save to unified file
     onCacheSaved?.()
   }
 
@@ -522,8 +519,8 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
   }
 
   setAnimes(updated)
-  saveSetting("cache.last", updated)
-  await saveData(path, updated)
+  saveSetting(CACHE_KEY, updated)        // distinct key
+  await saveCache(updated)                // save to unified file
   onCacheSaved?.()
 
   setRefreshing(false)

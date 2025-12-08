@@ -6,9 +6,8 @@ import { AnimeCell, chosenAnime } from "./Cache"
 import { searchAnilist, searchAnimepahe } from "../scripts/search"
 import { NumberInputSheet } from "./numberPopout"
 import { STORAGE_KEYS, loadSetting, saveSetting } from "./Settings"
-import { loadData, saveData } from "../scripts/data"
 import { QualitiesOrder, downloadEpisode, episodeNumber, getEpisode } from "../scripts/episode"
-import { addCache, addQueue } from "../scripts/cache"
+import { getCache, addCache, addQueue } from "../scripts/cache"
 import { hideOverlay, showOverlay } from "./Loading"
 import { QualityPickerSheet } from "./QualityPickerSheet"
 
@@ -59,24 +58,53 @@ const PlaceholderEntry: EntryType = {
 
 
 export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => void;onQueueSaved?:()=>void }) {
+  // Distinct storage keys for this page to avoid overrides
+  const CACHE_KEY = "cache.last.homepage"
+  const QUEUE_KEY = "queue.last.homepage"
+
   const [showNumberSheet, setShowNumberSheet] = useState(false)
   const [provider, setProvider] = useState<ProviderType>(loadSetting('settings.provider','Anilist'))
 
   const [animes, setAnimes] = useState<Anime[]>([PlaceholderAnime])
-  const [queue, setQueue] = useState<DownloadAnimeType[]>(loadSetting<DownloadAnimeType[]>("queue.last", []))
-  const path = loadSetting("cache.path", "cache.json") // ⬅️ unify with CachePage
-  const queuePath = loadSetting("queuePath.path", "queue.json")
+  const [queue, setQueue] = useState<DownloadAnimeType[]>(loadSetting<DownloadAnimeType[]>(QUEUE_KEY, []))
+  const [cacheUpdateTrigger, setCacheUpdateTrigger] = useState(0)
+
+  // Use ref to prevent loop - track if we're currently loading
+  const isLoadingRef = { current: false }
+
+  // Reload cache entry function
+  const reloadCacheEntry = async () => {
+    if (isLoadingRef.current) return // Prevent concurrent loads
+    try {
+      isLoadingRef.current = true
+      const cache = await getCache()
+      if (Array.isArray(cache) && cache.length) {
+        setAnimes([cache[0] as Anime])
+        saveSetting(CACHE_KEY, [cache[0] as Anime])  // distinct key
+      }
+    } catch { /* ignore */ } finally {
+      isLoadingRef.current = false
+    }
+  }
 
   useEffect(() => {
-    (async () => {
-      try {
-        const cache = await loadData(path)
-        if (Array.isArray(cache) && cache.length) {
-          setAnimes([cache[0] as Anime])
-        }
-      } catch { /* ignore */ }
-    })()
-  }, [path])
+    reloadCacheEntry()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])  // Load on mount
+
+  // Reload when cache update trigger changes (triggered by onCacheSaved)
+  useEffect(() => {
+    if (cacheUpdateTrigger > 0) {
+      reloadCacheEntry()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheUpdateTrigger])
+
+  // Wrapper for onCacheSaved that also triggers reload
+  const handleCacheSaved = () => {
+    setCacheUpdateTrigger(v => v + 1)
+    onCacheSaved?.()
+  }
 
   const [searchText, setSearchText] = useState("")
   const [results, setResults] = useState<Anime[]>([])
@@ -148,18 +176,14 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
 
     // 1) update CACHE (Anime[])
     const updatedCache = await addCache(cacheItem)            // returns Anime[]
-    setAnimes(updatedCache)
-    saveSetting("cache.last", updatedCache)                   // ✅ save the array
-    await saveData(path, updatedCache)
-    onCacheSaved?.()
+    setAnimes([updatedCache[0]])  // Update to show first entry
+    saveSetting(CACHE_KEY, [updatedCache[0]])                   // ✅ distinct key
+    handleCacheSaved()
 
     // 2) update QUEUE (DownloadAnime[])
-        console.log(queueItem)
     const updatedQueue = await addQueue(queueItem)            // returns DownloadAnime[]
-        console.log(updatedQueue)
     setQueue(updatedQueue)
-    saveSetting("queue.last", updatedQueue)                   // ✅ save the array
-    await saveData(queuePath, updatedQueue)
+    saveSetting(QUEUE_KEY, updatedQueue)                   // ✅ distinct key
     onQueueSaved?.()
 
     hideOverlay()
@@ -168,10 +192,9 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
       const anime = await getEpisode(index, async (options) => await askQualityOnce("Which quality?", options)   // 👈 add this
 )
       const next = await addCache(anime)
-      setAnimes(next)                        // optimistic UI
-      saveSetting("cache.last", next)
-      await saveData(path, next)
-      onCacheSaved?.()
+      setAnimes([next[0]])                        // optimistic UI - show first entry
+      saveSetting(CACHE_KEY, [next[0]])          // distinct key
+      handleCacheSaved()
     }
   }
 
@@ -240,10 +263,9 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
         isUnread: true
       }
       const next = await addCache(cacheEntry)
-      setAnimes(next)                      // optimistic UI
-      saveSetting("cache.last", next)
-      await saveData(path, next)
-      onCacheSaved?.()
+      setAnimes([next[0]])                      // optimistic UI - show first entry
+      saveSetting(CACHE_KEY, [next[0]])        // distinct key
+      handleCacheSaved()
       hideOverlay()
       return
     }

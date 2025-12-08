@@ -4,7 +4,7 @@ import {
   HStack, VStack, Spacer, Image, ZStack, RoundedRectangle,
 Label
 } from "scripting"
-import { loadData, saveData } from "../scripts/data"
+import { getQueue, saveQueue } from "../scripts/cache"
 
 type DownloadAnime = {
   name: string
@@ -88,30 +88,38 @@ function QueueCell({ item }: { item: DownloadAnime }) {
 }
 
 export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => void }) {
-  const queuePath = loadSetting("queue.path", "queue.json")
+  // Distinct storage key for this page to avoid overrides
+  const QUEUE_KEY = "queue.last.queuepage"
 
   // seed instantly from last save and normalize
   const [items, setItems] = useState<DownloadAnime[]>(
-    (loadSetting<Partial<DownloadAnime>[]>("queue.last", [])).map(normalizeQueueItem)
+    (loadSetting<Partial<DownloadAnime>[]>(QUEUE_KEY, [])).map(normalizeQueueItem)
   )
   const [loading, setLoading] = useState(false)
 
+  // Use ref to prevent loop - track if we're currently loading
+  const isLoadingRef = { current: false }
+
   async function loadQueue() {
+    if (isLoadingRef.current) return // Prevent concurrent loads
     try {
+      isLoadingRef.current = true
       setLoading(true)
-      const data = await loadData<Partial<DownloadAnime>[]>(queuePath)
+      const data = await getQueue()
       const next = Array.isArray(data) ? data.map(normalizeQueueItem) : []
       setItems(next)
-      saveSetting("queue.last", next)
+      saveSetting(QUEUE_KEY, next)  // distinct key
     } finally {
+      isLoadingRef.current = false
       setLoading(false)
     }
   }
 
+  // Load only once on mount - no dependencies to prevent loops
   useEffect(() => {
     loadQueue()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queuePath])
+  }, [])
 
   // 🔔 update badge count whenever items change
   useEffect(() => {
@@ -130,15 +138,15 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
   async function clearQueue() {
     const next: DownloadAnime[] = []
     setItems(next)
-    saveSetting("queue.last", next)
-    await saveData(queuePath, next)
+    saveSetting(QUEUE_KEY, next)        // distinct key
+    await saveQueue(next)                // save to unified file
   }
 
   async function deleteItem(item: DownloadAnime) {
     const next = items.filter(q => q !== item)
     setItems(next)                        // optimistic UI
-    saveSetting("cache.last", next)
-    await saveData(queuePath, next)
+    saveSetting(QUEUE_KEY, next)        // distinct key (was incorrectly using cache.last)
+    await saveQueue(next)                 // save to unified file
   }
 
   return (

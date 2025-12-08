@@ -47,7 +47,7 @@ function Example() {
       />
       <CacheView
         badge={cacheBadge}
-        key={cacheVersion} // ⬅️ force CachePage to remount & reload after saves
+        key={`cache-${cacheVersion}`} // ⬅️ force CachePage to remount & reload after saves
         tag={1}
         tabItem={<Label title={"Cache"} systemImage={"clock.fill"} />}
         onCacheSaved={onCacheSaved}
@@ -57,13 +57,14 @@ function Example() {
       
 
       <QueueView
-        key={queueVersion}
+        key={`queue-${queueVersion}`}
         tag={2}
         badge={queueBadge}
         tabItem={<Label title={"Queue"} systemImage={"square.grid.2x2.fill"} />}
         onBadgeChange={setQueueBadge}
       />
       <SettingsView
+        key={`settings-${cacheVersion}`}
         tag={3}
         tabItem={<Label title={"Settings"} systemImage={"gearshape.fill"} />}
       />
@@ -91,7 +92,7 @@ function QueueView(props: { onBadgeChange?: (n: number) => void }) {
 function SettingsView() { return <SettingsPage /> }
 
 
-const MARK = "__init_v1"                // string key
+const MARK = "__init_v2"                // string key - bumped for unified system
 const DEFAULTS = {
   [STORAGE_KEYS.VIDEO_PLAYER]: "nPlayer",
   [STORAGE_KEYS.AUTO_QUALITY]: true,
@@ -100,14 +101,21 @@ const DEFAULTS = {
     "-default","-auto","-480p","-360p"
   ],
   [STORAGE_KEYS.PROVIDER]: "Anilist",
-  [STORAGE_KEYS.CACHE_PATH]: "cache.json",
-  [STORAGE_KEYS.QUEUE_PATH]: "queue.json",
 }
 
-async function ensureFile(p: string) {
-  try { await copyFileFromDocumentsIfExists(p) } catch {}
-  try { if (Array.isArray(await loadData(p))) return } catch {}
-  await saveData(p, [])
+async function ensureUnifiedFile() {
+  const unifiedPath = "lists.json"
+  try { 
+    await copyFileFromDocumentsIfExists(unifiedPath) 
+  } catch {}
+  try { 
+    const data = await loadData<{ cache?: any[], queue?: any[] }>(unifiedPath)
+    if (data && (Array.isArray(data.cache) || Array.isArray(data.queue))) {
+      return // File exists and has valid structure
+    }
+  } catch {}
+  // Create new unified file with empty arrays
+  await saveData(unifiedPath, { cache: [], queue: [] })
 }
 
 export async function bootstrap() {
@@ -116,11 +124,12 @@ export async function bootstrap() {
   if (!inited) {
     Object.entries(DEFAULTS).forEach(([k, v]) => saveSetting(k, v))
     saveSetting(MARK, "1") // store string, not boolean
-    // coerce paths to string
-    const cachePath = String(loadSetting<string>(STORAGE_KEYS.CACHE_PATH, "cache.json"))
-    const queuePath = String(loadSetting<string>(STORAGE_KEYS.QUEUE_PATH, "queue.json"))
-    await ensureFile(cachePath)
-    await ensureFile(queuePath)
+    // Set unified file path
+    saveSetting("unified.path", "lists.json")
+    await ensureUnifiedFile()
+  } else {
+    // Even if already initialized, ensure unified file exists
+    await ensureUnifiedFile()
   }
 }
 
