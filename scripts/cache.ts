@@ -82,12 +82,15 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
     
     // Parse episode ranges
     const parseEpisodes = (epStr: string): { start: number, end: number } => {
-      if (epStr.includes(" to ")) {
-        const [start, end] = epStr.split(" to ").map(s => Number(s.trim()))
-        return { start, end }
+      const trimmed = epStr.trim()
+      if (trimmed.includes(" to ")) {
+        const parts = trimmed.split(" to ")
+        const start = Number(parts[0].trim())
+        const end = Number(parts[1].trim())
+        return { start: isNaN(start) ? 0 : start, end: isNaN(end) ? 0 : end }
       } else {
-        const num = Number(epStr.trim())
-        return { start: num, end: num }
+        const num = Number(trimmed)
+        return { start: isNaN(num) ? 0 : num, end: isNaN(num) ? 0 : num }
       }
     }
 
@@ -98,25 +101,37 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
     const mergedStart = Math.min(existingEp.start, newEp.start)
     const mergedEnd = Math.max(existingEp.end, newEp.end)
     
-    // Merge links arrays
-    // Keep mkdir from existing (first element), then merge unique links
+    // Merge links arrays - extract episode numbers from links to sort them
+    // Links format: `ffmpeg -i "${hls}" -c copy ~/Documents/.../...\ -\ ${number}.mp4`
+    const extractEpisodeFromLink = (link: string): number => {
+      const match = link.match(/\\ -\ (\d+)\.mp4/)
+      return match ? Number(match[1]) : 0
+    }
+    
+    // Keep mkdir from existing (first element)
     const mergedLinks: string[] = [existing.links[0]] // keep mkdir command
-    const linkSet = new Set<string>()
+    const linkMap = new Map<number, string>() // episode number -> link
     
     // Add all links from existing (skip mkdir)
     for (let i = 1; i < existing.links.length; i++) {
-      if (!linkSet.has(existing.links[i])) {
-        mergedLinks.push(existing.links[i])
-        linkSet.add(existing.links[i])
+      const epNum = extractEpisodeFromLink(existing.links[i])
+      if (epNum > 0) {
+        linkMap.set(epNum, existing.links[i])
       }
     }
     
-    // Add all links from new entry (skip mkdir)
+    // Add all links from new entry (skip mkdir), overwriting if same episode
     for (let i = 1; i < entry.links.length; i++) {
-      if (!linkSet.has(entry.links[i])) {
-        mergedLinks.push(entry.links[i])
-        linkSet.add(entry.links[i])
+      const epNum = extractEpisodeFromLink(entry.links[i])
+      if (epNum > 0) {
+        linkMap.set(epNum, entry.links[i])
       }
+    }
+    
+    // Sort by episode number and add to merged links
+    const sortedEpisodes = Array.from(linkMap.keys()).sort((a, b) => a - b)
+    for (const epNum of sortedEpisodes) {
+      mergedLinks.push(linkMap.get(epNum)!)
     }
     
     // Create merged entry

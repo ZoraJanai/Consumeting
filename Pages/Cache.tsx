@@ -84,10 +84,23 @@ function TapMenu({
   animeInfo: (anime: Anime, action: string) => void
 }): JSX.Element {
   if (anime.episodes !== "0") {
+    // Check if current episode is 0 (from "0/total" format)
+    const current = anime.episodes.includes("/")
+      ? Number(anime.episodes.split("/")[0])
+      : 0
+    
+    const isFirstEpisode = current === 0
+    
     return (
       <>
-        <Button title="Next"    action={() => animeInfo(anime, "Next")} />
-        <Button title="Resume"  action={() => animeInfo(anime, "Resume")} />
+        {isFirstEpisode ? (
+          <Button title="Start"   action={() => animeInfo(anime, "Next")} />
+        ) : (
+          <>
+            <Button title="Next"    action={() => animeInfo(anime, "Next")} />
+            <Button title="Resume"  action={() => animeInfo(anime, "Resume")} />
+          </>
+        )}
         <Button title="Choose"  action={() => animeInfo(anime, "Choose")} />
         <Menu label={<Text>Download</Text>}>
           <Button title="Continue" action={() => animeInfo(anime, "Continue")} />
