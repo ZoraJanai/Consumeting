@@ -78,46 +78,40 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
 
   if (index !== -1) {
     // Entry with same name exists - merge them into a single queue cell
-    // Merge with existing entry
     const existing = queue[index]
     
-    // Extract episode numbers from links
-    // Links format: `ffmpeg -i "${hls}" -c copy ~/Documents/.../...\ -\ ${number}.mp4`
-    const extractEpisodeFromLink = (link: string): number => {
-      const match = link.match(/\\ -\ (\d+)\.mp4/)
-      return match ? Number(match[1]) : 0
-    }
-    
-    // Keep mkdir from existing (first element)
-    const mergedLinks: string[] = [existing.links[0]] // keep mkdir command
-    const linkMap = new Map<number, string>() // episode number -> link
-    const episodeSet = new Set<number>() // all episode numbers
-    
-    // Add all links from existing (skip mkdir)
-    for (let i = 1; i < existing.links.length; i++) {
-      const epNum = extractEpisodeFromLink(existing.links[i])
-      if (epNum > 0) {
-        linkMap.set(epNum, existing.links[i])
-        episodeSet.add(epNum)
+    // Parse episode strings to get all episode numbers
+    const parseEpisodes = (epStr: string): number[] => {
+      if (!epStr || epStr.trim() === "") return []
+      const episodes: number[] = []
+      const parts = epStr.split(",").map(s => s.trim())
+      
+      for (const part of parts) {
+        if (part.includes(" to ")) {
+          // Range like "3 to 4"
+          const [start, end] = part.split(" to ").map(s => Number(s.trim()))
+          if (!isNaN(start) && !isNaN(end) && end >= start) {
+            for (let i = start; i <= end; i++) {
+              episodes.push(i)
+            }
+          }
+        } else {
+          // Single episode
+          const num = Number(part.trim())
+          if (!isNaN(num) && num > 0) {
+            episodes.push(num)
+          }
+        }
       }
+      return episodes
     }
     
-    // Add all links from new entry (skip mkdir), overwriting if same episode
-    for (let i = 1; i < entry.links.length; i++) {
-      const epNum = extractEpisodeFromLink(entry.links[i])
-      if (epNum > 0) {
-        linkMap.set(epNum, entry.links[i])
-        episodeSet.add(epNum)
-      }
-    }
+    // Get all episodes from both entries
+    const existingEpisodes = parseEpisodes(existing.episodes)
+    const newEpisodes = parseEpisodes(entry.episodes)
+    const allEpisodes = Array.from(new Set([...existingEpisodes, ...newEpisodes])).sort((a, b) => a - b)
     
-    // Sort by episode number and add to merged links
-    const sortedEpisodes = Array.from(episodeSet).sort((a, b) => a - b)
-    for (const epNum of sortedEpisodes) {
-      mergedLinks.push(linkMap.get(epNum)!)
-    }
-    
-    // Group episodes into continuous ranges
+    // Format episodes into ranges
     const formatEpisodes = (episodes: number[]): string => {
       if (episodes.length === 0) return ""
       if (episodes.length === 1) return String(episodes[0])
@@ -152,7 +146,27 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
       return ranges.join(", ")
     }
     
-    const mergedEpisodes = formatEpisodes(sortedEpisodes)
+    const mergedEpisodes = formatEpisodes(allEpisodes)
+    
+    // Merge links - keep mkdir from existing, then merge all other links
+    const mergedLinks: string[] = [existing.links[0]] // keep mkdir command
+    const linkSet = new Set<string>()
+    
+    // Add all links from existing (skip mkdir)
+    for (let i = 1; i < existing.links.length; i++) {
+      if (!linkSet.has(existing.links[i])) {
+        mergedLinks.push(existing.links[i])
+        linkSet.add(existing.links[i])
+      }
+    }
+    
+    // Add all links from new entry (skip mkdir)
+    for (let i = 1; i < entry.links.length; i++) {
+      if (!linkSet.has(entry.links[i])) {
+        mergedLinks.push(entry.links[i])
+        linkSet.add(entry.links[i])
+      }
+    }
     
     const mergedEntry: DownloadAnime = {
       ...entry, // use new entry's metadata (img, source, etc.)
@@ -165,60 +179,8 @@ export async function addQueue(entry: DownloadAnime): Promise<DownloadAnime[]> {
     queue.splice(index, 1)
     queue.unshift(mergedEntry)
   } else {
-    // New entry - format episodes consistently from links
-    const extractEpisodeFromLink = (link: string): number => {
-      const match = link.match(/\\ -\ (\d+)\.mp4/)
-      return match ? Number(match[1]) : 0
-    }
-    
-    const episodeSet = new Set<number>()
-    for (let i = 1; i < entry.links.length; i++) {
-      const epNum = extractEpisodeFromLink(entry.links[i])
-      if (epNum > 0) {
-        episodeSet.add(epNum)
-      }
-    }
-    
-    const sortedEpisodes = Array.from(episodeSet).sort((a, b) => a - b)
-    
-    // Format episodes into ranges
-    const formatEpisodes = (episodes: number[]): string => {
-      if (episodes.length === 0) return ""
-      if (episodes.length === 1) return String(episodes[0])
-      
-      const ranges: string[] = []
-      let rangeStart = episodes[0]
-      let rangeEnd = episodes[0]
-      
-      for (let i = 1; i < episodes.length; i++) {
-        if (episodes[i] === rangeEnd + 1) {
-          rangeEnd = episodes[i]
-        } else {
-          if (rangeStart === rangeEnd) {
-            ranges.push(String(rangeStart))
-          } else {
-            ranges.push(`${rangeStart} to ${rangeEnd}`)
-          }
-          rangeStart = episodes[i]
-          rangeEnd = episodes[i]
-        }
-      }
-      
-      if (rangeStart === rangeEnd) {
-        ranges.push(String(rangeStart))
-      } else {
-        ranges.push(`${rangeStart} to ${rangeEnd}`)
-      }
-      
-      return ranges.join(", ")
-    }
-    
-    const formattedEntry: DownloadAnime = {
-      ...entry,
-      episodes: formatEpisodes(sortedEpisodes)
-    }
-    
-    queue.unshift(formattedEntry)
+    // add new at front
+    queue.unshift(entry)
   }
 
   await saveUnified({ ...unified, queue })
