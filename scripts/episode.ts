@@ -164,8 +164,9 @@ export async function getAnimepaheSources(episodeId: string): Promise<QualityMap
     }
   }
 
-  return dict;
   console.log(dict);
+  return dict;
+  
 }
 
 // ---- Quality Selection ----
