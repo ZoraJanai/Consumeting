@@ -322,6 +322,7 @@ export async function getEpisode(
   console.log("[getEpisode] Selecting quality...");
 
   if (autoQuality) {
+    console.log(order)
     console.log("[getEpisode] Auto quality mode");
     selectedUrl = qualityAutoSelect(sources, order)
     console.log("[getEpisode] Auto selected:", selectedUrl);
