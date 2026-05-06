@@ -1,0 +1,7 @@
+{
+  "name": "consumeting",
+  "version": "1.8.0",
+  "description": "Anime streaming app with direct Animepahe and Anilist scraping",
+  "type": "module",
+  "dependencies": {}
+}
