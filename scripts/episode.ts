@@ -464,7 +464,7 @@ export async function downloadEpisode(
   onStart?.(total)
 
   const safeName = sanitizeFilename(entry.name)
-  const links: string[] = [`mkdir ${safeName.replaceAll(" ", "\\ ")}`]
+  const links: string[] = [`mkdir "${safeName}"`]
 
   let chosenTag: string | null = null
 
@@ -508,8 +508,7 @@ export async function downloadEpisode(
     const rustProxyBase = getRustProxyUrl()
     const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(url)}&origin=https://kwik.cx`
     const number = Number(entry.episode) + i
-    const escapedName = safeName.replaceAll(" ", "\\ ")
-    const link = `ffmpeg -i "${proxyUrl}" -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`
+    const link = `ffmpeg -i "${proxyUrl}" -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`
     links.push(link)
 
     onProgress?.(i + 1, total)
