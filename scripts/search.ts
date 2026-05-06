@@ -16,12 +16,10 @@ type Anime = {
 interface BaseInfo {
   img: string
   total: string
-  ids: { number: number; id: string; isWatched?: boolean }[]
+  ids: string[]
   id: string
   episode: string
   name: string
-  description?: string
-  status?: string
 }
 
 // ===== ANIMEPAHE DIRECT =====
@@ -239,13 +237,9 @@ const getInfoAnilist = async (anime: Anime): Promise<BaseInfo> => {
       episodes = animepaheInfo.episodes;
     }
 
-    const ids: { number: number; id: string; isWatched?: boolean }[] = [];
+    const ids: string[] = [];
     for (const ep of episodes) {
-      ids.push({
-        number: ep.number,
-        id: ep.id,
-        isWatched: false
-      });
+      ids.push(ep.id);
     }
 
     const output: BaseInfo = {
@@ -254,9 +248,7 @@ const getInfoAnilist = async (anime: Anime): Promise<BaseInfo> => {
       name: media.title.romaji || media.title.english,
       id: media.id,
       episode: "none",
-      img: anime.img,
-      description: media.description || undefined,
-      status: media.status || undefined
+      img: anime.img
     };
 
     console.log(output);
@@ -292,13 +284,9 @@ const getInfoAnimepahe = async (anime: Anime): Promise<BaseInfo> => {
 
     const animepaheInfo = await fetchAnimepaheInfo(match.source);
 
-    const ids: { number: number; id: string; isWatched?: boolean }[] = [];
+    const ids: string[] = [];
     for (const ep of animepaheInfo.episodes) {
-      ids.push({
-        number: ep.number,
-        id: ep.id,
-        isWatched: false
-      });
+      ids.push(ep.id);
     }
 
     const output: BaseInfo = {
@@ -307,9 +295,7 @@ const getInfoAnimepahe = async (anime: Anime): Promise<BaseInfo> => {
       name: match.name,
       id: animepaheInfo.id,
       episode: "none",
-      img: anime.img,
-      description: undefined,
-      status: undefined
+      img: anime.img
     };
 
     return output;

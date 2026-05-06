@@ -36,7 +36,7 @@ type EntryType = {
   ids: string[]
   episode: string
   total: string
-  id: string,
+  id: string
   img: string
 }
 

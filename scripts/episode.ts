@@ -14,22 +14,16 @@ type Anime = {
   episodes: string
   img: string
   isUnread: boolean
-  ids?: { number: number; id: string; isWatched?: boolean }[]
-  id?: string
-  description?: string
-  status?: string
 }
 
 export type QualityMap = Record<string, string>
 
 type EntryType = {
   name: string
-  ids: { number: number; id: string; isWatched?: boolean }[]
+  ids: string[]
   episode: string
   total: string
   id: string
-  description?: string
-  status?: string
   img: string
 }
 
@@ -262,7 +256,7 @@ export async function getEpisode(
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
   const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
 
-  const episodeId = entry.ids[index - 1]?.id || entry.ids[index - 1]
+  const episodeId = entry.ids[index - 1]
   const sources = await getAnimepaheSources(episodeId)
   const tags = Object.keys(sources)
 
@@ -303,23 +297,12 @@ export async function getEpisode(
 
   const stillUnread = index !== Number(entry.total)
   
-  const updatedIds = entry.ids ? entry.ids.map(ep => 
-    ep.number === index ? { ...ep, isWatched: true } : ep
-  ) : undefined
-  
-  const updatedEntry = { ...entry, ids: updatedIds }
-  saveSetting("entry", updatedEntry)
-  
   const cacheEntry: Anime = {
     name: entry.name,
     source: entry.id,
     episodes: String(index) + "/" + entry.total,
     img: entry.img,
-    isUnread: stillUnread,
-    ids: updatedIds,
-    id: entry.id,
-    description: entry.description,
-    status: entry.status
+    isUnread: stillUnread
   }
 
   addCache(cacheEntry)
@@ -350,7 +333,7 @@ export async function downloadEpisode(
   let chosenTag: string | null = null
 
   for (let i = 0; i < total; i++) {
-    const episodeId = ids[i]?.id || ids[i]
+    const episodeId = ids[i]
     const sources = await getAnimepaheSources(episodeId)
     const tags = Object.keys(sources)
 
@@ -396,26 +379,13 @@ export async function downloadEpisode(
     entry.episode === entry.total ? entry.episode : `${entry.episode} to ${entry.total}`
 
   const entryBool = ogEntry.episode != ogEntry.total
-  
-  const startEpisode = Number(entry.episode)
-  const updatedIds = ogEntry.ids ? ogEntry.ids.map(ep => {
-    const episodeNumber = ep.number
-    if (episodeNumber >= startEpisode && episodeNumber <= Number(entry.total)) {
-      return { ...ep, isWatched: true }
-    }
-    return ep
-  }) : undefined
 
   const cacheEntry: Anime = {
     name: entry.name,
     source: entry.id,
     episodes: `${ogEntry.episode}/${ogEntry.total}`,
     img: entry.img,
-    isUnread: entryBool,
-    ids: updatedIds,
-    id: entry.id,
-    description: entry.description,
-    status: entry.status
+    isUnread: entryBool
   }
 
   const queueEntry: DownloadAnime = {
