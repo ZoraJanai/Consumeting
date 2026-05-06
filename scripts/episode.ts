@@ -60,6 +60,34 @@ export const QualitiesOrder = [
 
 // ---- Direct Animepahe Source Fetching ----
 
+function sanitizeFilename(name: string): string {
+  return name
+    // Replace filesystem-unsafe characters
+    .replaceAll(":", " -")      // Colon (problematic in macOS/iOS)
+    .replaceAll("/", "-")        // Forward slash (directory separator)
+    .replaceAll("\\", "-")       // Backslash (directory separator in Windows)
+    .replaceAll("|", "-")        // Pipe (shell operator)
+    .replaceAll("?", "")         // Question mark (URL/shell)
+    .replaceAll("*", "")         // Asterisk (shell wildcard)
+    .replaceAll("<", "")         // Less than (shell redirect)
+    .replaceAll(">", "")         // Greater than (shell redirect)
+    .replaceAll('"', "")         // Double quote (shell)
+    .replaceAll("'", "")         // Single quote (shell)
+    .replaceAll("`", "")         // Backtick (shell)
+    .replaceAll("$", "")         // Dollar sign (shell variable)
+    .replaceAll("&", "and")      // Ampersand (shell operator)
+    .replaceAll(";", "")         // Semicolon (shell separator)
+    .replaceAll("(", "")         // Parentheses (shell)
+    .replaceAll(")", "")
+    .replaceAll("[", "")         // Brackets (shell)
+    .replaceAll("]", "")
+    .replaceAll("{", "")         // Braces (shell)
+    .replaceAll("}", "")
+    .replaceAll("#", "")         // Hash (URL fragment)
+    .replaceAll("%", "")         // Percent (URL encoding)
+    .trim()
+}
+
 function getBaseUrl(): string {
   return loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, 'https://animepahe.pw')
 }
@@ -435,7 +463,8 @@ export async function downloadEpisode(
   const total = ids.length
   onStart?.(total)
 
-  const links: string[] = [`mkdir ${entry.name.replaceAll(" ", "\\ ").replaceAll(":", "\\:")}`]
+  const safeName = sanitizeFilename(entry.name)
+  const links: string[] = [`mkdir ${safeName.replaceAll(" ", "\\ ")}`]
 
   let chosenTag: string | null = null
 
@@ -479,7 +508,7 @@ export async function downloadEpisode(
     const rustProxyBase = getRustProxyUrl()
     const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(url)}&origin=https://kwik.cx`
     const number = Number(entry.episode) + i
-    const escapedName = entry.name.replaceAll(" ", "\\ ").replaceAll(":", "\\:")
+    const escapedName = safeName.replaceAll(" ", "\\ ")
     const link = `ffmpeg -i "${proxyUrl}" -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`
     links.push(link)
 
