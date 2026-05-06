@@ -423,7 +423,7 @@ export async function downloadEpisode(
   const total = ids.length
   onStart?.(total)
 
-  const links: string[] = [`mkdir "${entry.name}"`]
+  const links: string[] = [`mkdir ${entry.name.replaceAll(" ", "\\ ").replaceAll(":", "\\:")}`]
 
   let chosenTag: string | null = null
 
@@ -463,10 +463,12 @@ export async function downloadEpisode(
     }
 
     // url is already the HLS m3u8 URL, wrap it with proxy
+    // Encode URL parameter for the proxy (this is required for the proxy to work)
     const rustProxyBase = getRustProxyUrl()
     const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(url)}&origin=https://kwik.cx`
     const number = Number(entry.episode) + i
-    const link = `ffmpeg -i "${proxyUrl}" -c copy "~/Documents/${entry.name}/${entry.name} - ${number}.mp4"`
+    const escapedName = entry.name.replaceAll(" ", "\\ ").replaceAll(":", "\\:")
+    const link = `ffmpeg -i "${proxyUrl}" -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`
     links.push(link)
 
     onProgress?.(i + 1, total)
