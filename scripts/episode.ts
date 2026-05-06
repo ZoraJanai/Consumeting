@@ -466,7 +466,7 @@ export async function downloadEpisode(
     const rustProxyBase = getRustProxyUrl()
     const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(url)}&origin=https://kwik.cx`
     const number = Number(entry.episode) + i
-    const link = `ffmpeg -i "${proxyUrl}" -c copy ~/Documents/${entry.name}/${entry.name} - ${number}.mp4`
+    const link = `ffmpeg -i "${proxyUrl}" -c copy "~/Documents/${entry.name}/${entry.name} - ${number}.mp4"`
     links.push(link)
 
     onProgress?.(i + 1, total)

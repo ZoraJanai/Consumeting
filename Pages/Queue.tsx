@@ -159,11 +159,11 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
 
   async function download() {
     const all = items.flatMap(item => item.links).join("\n")
-    console.log(all)
+    console.log("Raw commands:", all)
     const allEncoded = encodeURIComponent(all)
-    await Safari.openURL(`ashell://cd%0A${allEncoded}`)
+    console.log("Encoded:", allEncoded)
+    await Safari.openURL(`ashell://${allEncoded}`)
 
-    console.log(allEncoded)
     clearQueue()
   }
 
