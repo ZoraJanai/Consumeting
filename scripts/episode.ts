@@ -1,6 +1,6 @@
 // Episode handling with direct Animepahe scraping
 import { fetch, useState } from "scripting"
-import { loadSetting, saveSetting } from "../Pages/Settings"
+import { loadSetting, saveSetting, STORAGE_KEYS } from "../Pages/Settings"
 import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
@@ -66,10 +66,18 @@ export const STORAGE_KEYS = {
 
 // ---- Direct Animepahe Source Fetching ----
 
-const baseUrl = 'https://animepahe.pw';
+function getBaseUrl(): string {
+  return loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, 'https://animepahe.pw')
+}
+
+function getRustProxyUrl(): string {
+  return loadSetting(STORAGE_KEYS.RUST_PROXY_URL, 'https://rust-proxy-hvm4.onrender.com')
+}
+
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
 function getHeaders(sessionId?: string) {
+  const baseUrl = getBaseUrl()
   return {
     authority: 'animepahe.pw',
     accept: 'application/json, text/javascript, */*; q=0.01',
@@ -176,6 +184,7 @@ function parseResolutionMenu(html: string) {
 
 export async function getAnimepaheSources(episodeId: string): Promise<QualityMap> {
   console.log('[getAnimepaheSources] Fetching episode page:', episodeId);
+  const baseUrl = getBaseUrl()
   
   const response = await fetch(
     `${baseUrl}/play/${episodeId}`,
@@ -374,8 +383,11 @@ export async function getEpisode(
   console.log("[getEpisode] Hiding overlay");
   hideOverlay()
 
-  const finalUrl = player === "nPlayer" ? "-" + selectedUrl : selectedUrl.replace("https", "")
-  console.log("[getEpisode] Final URL:", finalUrl);
+  const rustProxyBase = getRustProxyUrl()
+  const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(selectedUrl)}&origin=https://kwik.cx`
+  const finalUrl = player === "nPlayer" ? "-" + proxyUrl : "://" + proxyUrl
+  console.log("[getEpisode] Proxy URL:", proxyUrl);
+  console.log("[getEpisode] Final URL:", (player + finalUrl).toLowerCase());
   console.log("[getEpisode] Opening in Safari...");
   await Safari.openURL((player + finalUrl).toLowerCase())
   console.log("[getEpisode] Safari opened");
@@ -456,9 +468,11 @@ export async function downloadEpisode(
       }
     }
 
-    // url is already the HLS m3u8 URL
+    // url is already the HLS m3u8 URL, wrap it with proxy
+    const rustProxyBase = getRustProxyUrl()
+    const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(url)}&origin=https://kwik.cx`
     const number = Number(entry.episode) + i
-    const link = `ffmpeg -i "${url}" -c copy ~/Documents/${entry.name.replaceAll(" ", "\\ ")}/${entry.name.replaceAll(" ", "\\ ")}\\ -\\ ${number}.mp4`
+    const link = `ffmpeg -i "${proxyUrl}" -c copy ~/Documents/${entry.name.replaceAll(" ", "\\ ")}/${entry.name.replaceAll(" ", "\\ ")}\\ -\\ ${number}.mp4`
     links.push(link)
 
     onProgress?.(i + 1, total)

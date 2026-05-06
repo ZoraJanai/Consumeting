@@ -1,4 +1,5 @@
 import { fetch } from "scripting"
+import { loadSetting, STORAGE_KEYS } from "../Pages/Settings"
 
 // Type definitions
 type Anime = {
@@ -24,10 +25,14 @@ interface BaseInfo {
 
 // ===== ANIMEPAHE DIRECT =====
 
-const baseUrl = 'https://animepahe.pw';
+function getBaseUrl(): string {
+  return loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, 'https://animepahe.pw')
+}
+
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
 function getHeaders(sessionId?: string) {
+  const baseUrl = getBaseUrl()
   return {
     authority: 'animepahe.pw',
     accept: 'application/json, text/javascript, */*; q=0.01',
@@ -48,6 +53,7 @@ function getHeaders(sessionId?: string) {
 
 async function fetchEpisodes(session: string, page: number) {
   console.log(`[fetchEpisodes] Fetching session: ${session}, page: ${page}`);
+  const baseUrl = getBaseUrl()
   const response = await fetch(
     `${baseUrl}/api?m=release&id=${session}&sort=episode_asc&page=${page}`,
     { headers: getHeaders(session) }
@@ -186,6 +192,7 @@ const searchAnilist = async (query: string): Promise<Anime[] | string> => {
 const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
   console.log('[searchAnimepahe] START - query:', query);
   try {
+    const baseUrl = getBaseUrl()
     const cleanQuery = query.replaceAll(/[^\p{L}\p{N}\s]/gu, "");
     console.log('[searchAnimepahe] Clean query:', cleanQuery);
     console.log('[searchAnimepahe] Fetching search results');

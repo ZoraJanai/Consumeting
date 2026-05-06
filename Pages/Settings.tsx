@@ -19,7 +19,9 @@ export const STORAGE_KEYS = {
   QUALITY_ORDER: "settings.qualityOrder",
   PROVIDER: "settings.provider",
   CACHE_PATH: "cache.path",
-  QUEUE_PATH: "queue.path"
+  QUEUE_PATH: "queue.path",
+  ANIMEPAHE_BASE_URL: "settings.animepaheBaseUrl",
+  RUST_PROXY_URL: "settings.rustProxyUrl"
 }
 
 // Simple storage helpers
@@ -140,6 +142,12 @@ export function SettingsPage() {
   const [autoQuality, setAutoQuality] = useState(
     loadSetting(STORAGE_KEYS.AUTO_QUALITY, true)
   )
+  const [animepaheBaseUrl, setAnimepaheBaseUrl] = useState(
+    loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, "https://animepahe.pw")
+  )
+  const [rustProxyUrl, setRustProxyUrl] = useState(
+    loadSetting(STORAGE_KEYS.RUST_PROXY_URL, "https://rust-proxy-hvm4.onrender.com")
+  )
 
   function handleVideoPlayerChange(player: any) {
     setVideoPlayer(player)
@@ -154,6 +162,32 @@ export function SettingsPage() {
   function handleAutoQualityChange(enabled: boolean) {
     setAutoQuality(enabled)
     saveSetting(STORAGE_KEYS.AUTO_QUALITY, enabled)
+  }
+
+  async function editAnimepaheUrl() {
+    const input = await Dialog.prompt({
+      title: "Animepahe Base URL",
+      message: "Enter the Animepahe base URL",
+      value: animepaheBaseUrl
+    })
+    if (input && input.trim()) {
+      const newUrl = input.trim()
+      setAnimepaheBaseUrl(newUrl)
+      saveSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, newUrl)
+    }
+  }
+
+  async function editRustProxyUrl() {
+    const input = await Dialog.prompt({
+      title: "Rust Proxy URL",
+      message: "Enter the Rust proxy base URL",
+      value: rustProxyUrl
+    })
+    if (input && input.trim()) {
+      const newUrl = input.trim()
+      setRustProxyUrl(newUrl)
+      saveSetting(STORAGE_KEYS.RUST_PROXY_URL, newUrl)
+    }
   }
 
   return (
@@ -196,6 +230,17 @@ export function SettingsPage() {
               <Text tag={"Animepahe"}>Animepahe</Text>
             </Picker>
           </HStack>
+        </Section>
+
+        <Section header={<Text>URLs</Text>}>
+          <Button
+            title={`Animepahe: ${animepaheBaseUrl}`}
+            action={editAnimepaheUrl}
+          />
+          <Button
+            title={`Proxy: ${rustProxyUrl}`}
+            action={editRustProxyUrl}
+          />
         </Section>
       </List>
     </NavigationStack>
