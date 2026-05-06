@@ -89,78 +89,118 @@ function getHeaders(sessionId?: string) {
 }
 
 async function extractKwikUrl(kwikUrl: string): Promise<string> {
+  console.log('[extractKwikUrl] Fetching:', kwikUrl);
+  
   const response = await fetch(kwikUrl, {
     headers: { Referer: 'https://animepahe.pw/' },
   });
 
   if (!response.ok) {
+    console.error('[extractKwikUrl] HTTP error:', response.status);
     throw new Error(`HTTP error! status: ${response.status}`);
   }
 
+  console.log('[extractKwikUrl] Got response, parsing HTML');
   const html = await response.text();
+  console.log('[extractKwikUrl] HTML length:', html.length);
+  
   const packedMatch = /(eval)(\(f.*?)(\n<\/script>)/s.exec(html);
   if (!packedMatch) {
+    console.error('[extractKwikUrl] Could not find packed script in HTML');
     throw new Error('Could not find packed script');
   }
 
-  const unpacked = eval(packedMatch[2].replace('eval', ''));
-  const m3u8Match = unpacked.match(/https.*?m3u8/);
-  if (!m3u8Match) {
-    throw new Error('Could not find m3u8 URL');
-  }
+  console.log('[extractKwikUrl] Found packed script, unpacking...');
+  try {
+    const unpacked = eval(packedMatch[2].replace('eval', ''));
+    console.log('[extractKwikUrl] Unpacked, searching for m3u8');
+    
+    const m3u8Match = unpacked.match(/https.*?m3u8/);
+    if (!m3u8Match) {
+      console.error('[extractKwikUrl] Could not find m3u8 in unpacked:', unpacked.substring(0, 200));
+      throw new Error('Could not find m3u8 URL');
+    }
 
-  return m3u8Match[0];
+    console.log('[extractKwikUrl] Found m3u8:', m3u8Match[0]);
+    return m3u8Match[0];
+  } catch (err) {
+    console.error('[extractKwikUrl] eval() failed:', err);
+    throw new Error('Failed to unpack Kwik script: ' + err);
+  }
 }
 
 function parseResolutionMenu(html: string) {
+  console.log('[parseResolutionMenu] START - HTML length:', html.length);
   const buttons: { url: string; quality: string; audio?: string }[] = [];
   const buttonRegex = /<button[^>]*data-src="([^"]*)"[^>]*>([^<]*)<\/button>/g;
+  console.log('[parseResolutionMenu] Regex created, starting search');
+  
   let match;
+  let count = 0;
   
   while ((match = buttonRegex.exec(html)) !== null) {
+    count++;
     const dataSrc = match[1];
     const quality = match[2].trim();
+    console.log(`[parseResolutionMenu] Found button ${count}: quality="${quality}", url="${dataSrc}"`);
+    
     const audioMatch = new RegExp(`data-src="${dataSrc}"[^>]*data-audio="([^"]*)"`, 'g').exec(html);
+    const audio = audioMatch ? audioMatch[1] : undefined;
+    console.log(`[parseResolutionMenu] Audio track: ${audio}`);
     
     buttons.push({
       url: dataSrc,
       quality: quality,
-      audio: audioMatch ? audioMatch[1] : undefined,
+      audio: audio,
     });
   }
   
+  console.log('[parseResolutionMenu] DONE - Found', buttons.length, 'buttons');
   return buttons;
 }
 
 export async function getAnimepaheSources(episodeId: string): Promise<QualityMap> {
+  console.log('[getAnimepaheSources] Fetching episode page:', episodeId);
+  
   const response = await fetch(
     `${baseUrl}/play/${episodeId}`,
     { headers: getHeaders(episodeId.split('/')[0]) }
   );
 
   if (!response.ok) {
+    console.error('[getAnimepaheSources] HTTP error:', response.status);
     throw new Error(`HTTP error! status: ${response.status}`);
   }
 
+  console.log('[getAnimepaheSources] Parsing resolution menu');
   const html = await response.text();
   const buttons = parseResolutionMenu(html);
+  console.log('[getAnimepaheSources] Found', buttons.length, 'quality options');
 
   const dict: QualityMap = {};
   
-  for (const button of buttons) {
-    const url = await extractKwikUrl(button.url);
-    const parts = button.quality.split(" · ");
-    const tag = "-" + (parts[1] ?? parts[0]).trim();
+  for (let i = 0; i < buttons.length; i++) {
+    const button = buttons[i];
+    console.log(`[getAnimepaheSources] Processing quality ${i+1}/${buttons.length}: ${button.quality}`);
     
-    // Skip "eng" suffix
-    if (!tag.endsWith("eng")) {
-      dict[tag] = url;
+    try {
+      const url = await extractKwikUrl(button.url);
+      const parts = button.quality.split(" · ");
+      const tag = "-" + (parts[1] ?? parts[0]).trim();
+      
+      // Skip "eng" suffix
+      if (!tag.endsWith("eng")) {
+        dict[tag] = url;
+        console.log(`[getAnimepaheSources] Added ${tag}`);
+      }
+    } catch (err) {
+      console.error(`[getAnimepaheSources] Failed to extract quality ${button.quality}:`, err);
+      // Continue with other qualities instead of failing completely
     }
   }
 
-  console.log(dict);
+  console.log('[getAnimepaheSources] Final dict:', dict);
   return dict;
-  
 }
 
 // ---- Quality Selection ----
@@ -242,34 +282,55 @@ export async function getEpisode(
   index: number,
   askQuality?: (options: string[]) => Promise<string>
 ): Promise<Anime> {
+  console.log("[getEpisode] START - index:", index);
   showOverlay()
-
-  console.log("running getEpisode");
+  console.log("[getEpisode] Overlay shown");
 
   const noDownload: Anime = { name: "", source: "", episodes: "", img: "", isUnread: false }
-  if (index === -44) return noDownload
+  if (index === -44) {
+    console.log("[getEpisode] No download, returning early");
+    return noDownload;
+  }
 
-
-  console.log("fetch sources");
+  console.log("[getEpisode] Loading settings");
   const entry = loadSetting("entry", PlaceholderEntry)
+  console.log("[getEpisode] Entry loaded:", entry);
+  
   const autoQuality = loadSetting(STORAGE_KEYS.AUTO_QUALITY, true)
+  console.log("[getEpisode] Auto quality:", autoQuality);
+  
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
+  console.log("[getEpisode] Quality order:", order);
+  
   const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
+  console.log("[getEpisode] Player:", player);
 
   const episodeId = entry.ids[index - 1]
+  console.log("[getEpisode] Episode ID:", episodeId);
+  console.log("[getEpisode] Calling getAnimepaheSources...");
+  
   const sources = await getAnimepaheSources(episodeId)
+  console.log("[getEpisode] Sources received:", sources);
+  
   const tags = Object.keys(sources)
+  console.log("[getEpisode] Available tags:", tags);
 
 
 
 
   let selectedUrl: string | undefined
+  console.log("[getEpisode] Selecting quality...");
 
   if (autoQuality) {
+    console.log("[getEpisode] Auto quality mode");
     selectedUrl = qualityAutoSelect(sources, order)
+    console.log("[getEpisode] Auto selected:", selectedUrl);
+    
     if (!selectedUrl) {
+      console.log("[getEpisode] No auto match, asking user");
       if (!askQuality) throw new Error("askQuality callback not provided")
       const pickedTag = await askQuality(tags)
+      console.log("[getEpisode] User picked:", pickedTag);
 
       const filtered = order.filter(q => q !== pickedTag)
       const newOrder = [
@@ -279,23 +340,32 @@ export async function getEpisode(
       ]
 
       saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
+      console.log("[getEpisode] Updated quality order");
       order = newOrder
 
       selectedUrl = sources[pickedTag]
+      console.log("[getEpisode] Selected URL:", selectedUrl);
     }
   } else {
+    console.log("[getEpisode] Manual quality mode");
     if (!askQuality) throw new Error("askQuality callback not provided")
     const pickedTag = await askQuality(tags)
+    console.log("[getEpisode] User picked:", pickedTag);
     selectedUrl = sources[pickedTag]
+    console.log("[getEpisode] Selected URL:", selectedUrl);
   }
 
-  // selectedUrl is already the HLS m3u8 URL (no kwikExtractor needed)
+  console.log("[getEpisode] Hiding overlay");
   hideOverlay()
 
   const finalUrl = player === "nPlayer" ? "-" + selectedUrl : selectedUrl.replace("https", "")
+  console.log("[getEpisode] Final URL:", finalUrl);
+  console.log("[getEpisode] Opening in Safari...");
   await Safari.openURL((player + finalUrl).toLowerCase())
+  console.log("[getEpisode] Safari opened");
 
   const stillUnread = index !== Number(entry.total)
+  console.log("[getEpisode] Still unread:", stillUnread);
   
   const cacheEntry: Anime = {
     name: entry.name,
@@ -304,8 +374,11 @@ export async function getEpisode(
     img: entry.img,
     isUnread: stillUnread
   }
+  console.log("[getEpisode] Cache entry created:", cacheEntry);
 
+  console.log("[getEpisode] Adding to cache");
   addCache(cacheEntry)
+  console.log("[getEpisode] DONE");
   return cacheEntry
 }
 
