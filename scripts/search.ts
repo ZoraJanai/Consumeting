@@ -1,244 +1,328 @@
 import { fetch } from "scripting"
 
 // Type definitions
-type ProviderType = "animepahe" | string
-type TitlesMap = { [key: string]: string }
 type Anime = {
   name: string
-  source: string //used here as provider
-  episodes: string //used here as year of release
+  source: string
+  episodes: string
   img: string
-  isUnread: boolean}
-
-
-interface BaseResult {
-  id: string
-  totalEpisodes?: number
-  image: string 
-  releaseDate: number
+  isUnread: boolean
+  ids?: { number: number; id: string; isWatched?: boolean }[]
+  id?: string
+  description?: string
+  status?: string
 }
-
-interface AnilistResult extends BaseResult {
-  title: { romaji: string };
-}
-
-interface AnimepaheResult extends BaseResult {
-  title: string;
-}
-
-
-interface AnimeResultSimple {
-  id: string
-  title: string
-}
-
-interface Episode {
-  id: string
-  number: number
-}
-
-interface AnimeInfo {
-  episodes: Episode[]
-}
-
 
 interface BaseInfo {
   img: string
   total: string
-  ids: string[]
+  ids: { number: number; id: string; isWatched?: boolean }[]
   id: string
   episode: string
   name: string
+  description?: string
+  status?: string
 }
 
-// Global variables (you’ll need to set these)
-//declare const baseUrl: string
-//declare const provider: ProviderType
-const baseUrl= "https://consumet-srgm.vercel.app"
-const provider = "animepahe"
+// ===== ANIMEPAHE DIRECT =====
 
-// Anilist search function
-const searchAnilist = async (query: string): Promise<Anime[] | string> => {
-  switch (provider) {
-    case "animepahe":
-      try {
-        const url = `${baseUrl}/meta/anilist/${(query.replaceAll("/"," "))}`
-        const response = await fetch(url)
+const baseUrl = 'https://animepahe.ru';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-
-        const body = await response.json()
-        const results: AnilistResult[] = body.results
-
-        const output = []
-        for (let i = 0; i < results.length; i++) {
-          let searchEntry: Anime = {
-name: results[i].title.romaji,
-source: String(results[i].id),
-episodes: "0",
-img: results[i].image,
-isUnread: false
+function getHeaders(sessionId?: string) {
+  return {
+    authority: 'animepahe.ru',
+    accept: 'application/json, text/javascript, */*; q=0.01',
+    'accept-language': 'en-US,en;q=0.9',
+    cookie: '__ddg2_=;',
+    dnt: '1',
+    'sec-ch-ua': '"Not A(Brand";v="99", "Microsoft Edge";v="121", "Chromium";v="121"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'x-requested-with': 'XMLHttpRequest',
+    referer: sessionId ? `${baseUrl}/anime/${sessionId}` : `${baseUrl}`,
+    'user-agent': USER_AGENT,
+  };
 }
-          output.push(searchEntry)
+
+async function fetchEpisodes(session: string, page: number) {
+  const response = await fetch(
+    `${baseUrl}/api?m=release&id=${session}&sort=episode_asc&page=${page}`,
+    { headers: getHeaders(session) }
+  );
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  return {
+    episodes: data.data.map((item: any) => ({
+      id: `${session}/${item.session}`,
+      number: item.episode,
+    })),
+    lastPage: data.last_page,
+  };
+}
+
+async function fetchAnimepaheInfo(id: string) {
+  const firstPage = await fetchEpisodes(id, 1);
+  const allEpisodes = [...firstPage.episodes];
+
+  for (let page = 2; page <= firstPage.lastPage; page++) {
+    const pageData = await fetchEpisodes(id, page);
+    allEpisodes.push(...pageData.episodes);
+  }
+
+  return {
+    id,
+    episodes: allEpisodes,
+  };
+}
+
+// ===== ANILIST DIRECT =====
+
+const anilistGraphqlUrl = 'https://graphql.anilist.co';
+
+function anilistSearchQuery(query: string) {
+  return {
+    query: `
+      query ($search: String) {
+        Page(page: 1, perPage: 15) {
+          media(search: $search, type: ANIME) {
+            id
+            title {
+              romaji
+              english
+            }
+            coverImage {
+              large
+              medium
+            }
+          }
         }
-
-        //titles["One-time Search"] = "animepahe"
-
-        //console.log(output)
-        return output
-      } catch (error) {
-        console.error("Error in searchAnilist:", error)
-        throw error
       }
+    `,
+    variables: { search: query },
+  };
+}
 
-    default:
-      return "not supported"
+function anilistInfoQuery(id: string) {
+  return {
+    query: `
+      query ($id: Int) {
+        Media(id: $id, type: ANIME) {
+          id
+          title {
+            romaji
+            english
+          }
+          coverImage {
+            large
+            medium
+          }
+          description
+          status(version: 2)
+        }
+      }
+    `,
+    variables: { id: parseInt(id) },
+  };
+}
+
+// ===== EXPORTED FUNCTIONS =====
+
+// Search Anilist
+const searchAnilist = async (query: string): Promise<Anime[] | string> => {
+  try {
+    const requestData = anilistSearchQuery(query.replaceAll("/", " "));
+
+    const response = await fetch(anilistGraphqlUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(requestData),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const results = data.data.Page.media;
+
+    const output: Anime[] = [];
+    for (const item of results) {
+      output.push({
+        name: item.title.romaji || item.title.english,
+        source: String(item.id),
+        episodes: "0",
+        img: item.coverImage.large || item.coverImage.medium,
+        isUnread: false
+      });
+    }
+
+    return output;
+  } catch (error) {
+    console.error("Error in searchAnilist:", error);
+    throw error;
   }
 }
-
 
 // Search Animepahe directly
 const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
   try {
-    const url = `${baseUrl}/anime/animepahe/${(query.replaceAll(/[^\p{L}\p{N}\s]/gu,""))}`
-    console.log(url)
-        const response = await fetch(url)
+    const cleanQuery = query.replaceAll(/[^\p{L}\p{N}\s]/gu, "");
+    const response = await fetch(
+      `${baseUrl}/api?m=search&q=${encodeURIComponent(cleanQuery)}`,
+      { headers: getHeaders() }
+    );
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
 
-        const body = await response.json()
-        const results: AnimepaheResult[] = body.results
+    const data = await response.json();
+    
+    const output: Anime[] = [];
+    for (const item of data.data) {
+      output.push({
+        name: item.title,
+        source: String(item.session),
+        episodes: "0",
+        img: item.poster,
+        isUnread: false
+      });
+    }
 
-        const output = []
-        for (let i = 0; i < results.length; i++) {
-          let searchEntry: Anime = {
-name: results[i].title,
-source: String(results[i].id),
-episodes: "0",
-img: results[i].image,
-isUnread: false
-}
-          output.push(searchEntry)
-        }
-
-        //titles["One-time Search"] = "animepahe"
-
-        //console.log(output)
-        return output
+    return output;
   } catch (error) {
-    console.error("Error in searchAnimepahe:", error)
-    throw error
+    console.error("Error in searchAnimepahe:", error);
+    throw error;
   }
 }
 
-
-// Get anime info from Anilist
+// Get anime info from Anilist with Animepahe episodes
 const getInfoAnilist = async (anime: Anime): Promise<BaseInfo> => {
   try {
-    const url = `${baseUrl}/meta/anilist/info/${anime.source}?provider=animepahe`
-    const response = await fetch(url)
+    const requestData = anilistInfoQuery(anime.source);
+
+    const response = await fetch(anilistGraphqlUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(requestData),
+    });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    const bodyResult = await response.json()
-    const body: Episode[] = bodyResult.episodes
+    const anilistData = await response.json();
+    const media = anilistData.data.Media;
 
-    let totalEP = body.length
-    const ids: string[] = []
+    // Get episodes from Animepahe
+    const title = media.title.romaji || media.title.english;
+    const searchResults = await searchAnimepahe(title);
+    
+    let episodes: any[] = [];
+    if (Array.isArray(searchResults) && searchResults.length > 0) {
+      const animepaheInfo = await fetchAnimepaheInfo(searchResults[0].source);
+      episodes = animepaheInfo.episodes;
+    }
 
-    for (let i = 0; i < body.length; i++) {
-      if (Math.ceil(body[i].number) === body[i].number && body[i].number !== 0) {
-        ids.push(body[i].id)
-      } else {
-        totalEP--
-      }
+    const ids: { number: number; id: string; isWatched?: boolean }[] = [];
+    for (const ep of episodes) {
+      ids.push({
+        number: ep.number,
+        id: ep.id,
+        isWatched: false
+      });
     }
 
     const output: BaseInfo = {
-      total: String(totalEP),
+      total: String(ids.length),
       ids: ids,
-      name: bodyResult.title.romaji,
-      id: bodyResult.id,
+      name: media.title.romaji || media.title.english,
+      id: media.id,
       episode: "none",
-      img:anime.img
-      
-    }
-    console.log(output)
-    return output
+      img: anime.img,
+      description: media.description || undefined,
+      status: media.status || undefined
+    };
+
+    console.log(output);
+    return output;
   } catch (error) {
-    console.error("Error in getInfoAnilist:", error)
-    throw error
+    console.error("Error in getInfoAnilist:", error);
+    throw error;
   }
 }
 
 // Get anime info from Animepahe
 const getInfoAnimepahe = async (anime: Anime): Promise<BaseInfo> => {
-  console.log(anime.name)
-  let match: Anime | undefined
+  console.log(anime.name);
   try {
-    const search = await searchAnimepahe(anime.name)
-    console.log(search)
+    const search = await searchAnimepahe(anime.name);
+    
+    let match: Anime | undefined;
     if (Array.isArray(search)) {
-    match = search.find(obj => obj.name === anime.name)
-  if (match) {
-    console.log("Got exact match:", match)
-  } else {
-    console.log("No match")
-  }
-} else {
-  console.log("Error / no results:", search) // found is a string hereC
-}
-    const url = `${baseUrl}/anime/animepahe/info/${match!.source}`
-    const response = await fetch(url)
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      match = search.find(obj => obj.name === anime.name);
+      if (match) {
+        console.log("Got exact match:", match);
+      } else {
+        console.log("No exact match, using first result");
+        match = search[0];
+      }
+    } else {
+      throw new Error("Search failed: " + search);
     }
 
-    const bodyResult = await response.json()
-    const body: Episode[] = bodyResult.episodes
+    if (!match) {
+      throw new Error("No results found");
+    }
 
-    let totalEP = body.length
-    const ids: string[] = []
+    const animepaheInfo = await fetchAnimepaheInfo(match.source);
 
-    for (let i = 0; i < body.length; i++) {
-      if (Math.ceil(body[i].number) === body[i].number && body[i].number !== 0) {
-        ids.push(body[i].id)
-      } else {
-        totalEP--
-      }
+    const ids: { number: number; id: string; isWatched?: boolean }[] = [];
+    for (const ep of animepaheInfo.episodes) {
+      ids.push({
+        number: ep.number,
+        id: ep.id,
+        isWatched: false
+      });
     }
 
     const output: BaseInfo = {
-      total: String(totalEP),
+      total: String(ids.length),
       ids: ids,
-      name: bodyResult.title,
-      id: bodyResult.id,
+      name: match.name,
+      id: animepaheInfo.id,
       episode: "none",
-      img: anime.img
-      
-    }
+      img: anime.img,
+      description: undefined,
+      status: undefined
+    };
 
-    return output
+    return output;
   } catch (error) {
-    //console.error("Error in getInfoAnimepahe:", error)
-    throw error
+    console.error("Error in getInfoAnimepahe:", error);
+    throw error;
   }
 }
 
-// Export all functions
 export {
   searchAnilist,
   getInfoAnilist,
   searchAnimepahe,
   getInfoAnimepahe,
-  type TitlesMap,
-  type BaseInfo,
-  type ProviderType
+  type BaseInfo
 }

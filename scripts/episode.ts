@@ -1,15 +1,10 @@
-// Animepahe.ts
-// Handles fetching episode sources, selecting quality, and extracting HLS
-
+// Episode handling with direct Animepahe scraping
 import { fetch, useState } from "scripting"
 import { loadSetting, saveSetting } from "../Pages/Settings"
 import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
-
-
-
 
 // ---- Types ----
 
@@ -19,32 +14,22 @@ type Anime = {
   episodes: string
   img: string
   isUnread: boolean
+  ids?: { number: number; id: string; isWatched?: boolean }[]
+  id?: string
+  description?: string
+  status?: string
 }
 
-export type QualityMap = Record<string, string> // "-1080p", etc => URL
-
-export type AnimepaheSource = {
-  quality: string // e.g. "HLS · 1080p eng"
-  url: string
-}
-
-export type AnimepaheWatchResponse = {
-  sources: AnimepaheSource[]
-}
-
-export type CurrentEntry = {
-  name: string
-  ids: string[] // episode ids (index = episode-1)
-  number: number // current episode number (1-based)
-}
-
+export type QualityMap = Record<string, string>
 
 type EntryType = {
   name: string
-  ids: string[]
+  ids: { number: number; id: string; isWatched?: boolean }[]
   episode: string
   total: string
   id: string
+  description?: string
+  status?: string
   img: string
 }
 
@@ -59,7 +44,6 @@ export type DownloadAnime = {
 
 // ---- Defaults & Storage Keys ----
 
-
 export const PlaceholderEntry: EntryType = {
   name: "Name of Anime",
   ids: [],
@@ -68,7 +52,6 @@ export const PlaceholderEntry: EntryType = {
   id: "123456",
   img: ""
 }
-
 
 export const QualitiesOrder = [
   "-1080p BD",
@@ -87,32 +70,104 @@ export const STORAGE_KEYS = {
   QUALITY_ORDER: "settings.qualityOrder"
 }
 
-const baseUrl: string = "https://consumet-srgm.vercel.app"
+// ---- Direct Animepahe Source Fetching ----
 
-// ---- 1. Get Animepahe Sources ----
+const baseUrl = 'https://animepahe.ru';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
-export async function getAnimepaheSources(id: string): Promise<QualityMap> {
-  //console.log(id)
-  const url = `${baseUrl}/anime/animepahe/watch?episodeId=${encodeURIComponent(id)}`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`getAnimepaheSources failed: ${res.status}`)
-
-  const body = (await res.json()) as AnimepaheWatchResponse
-  const dict: QualityMap = {}
-
-  for (const src of body.sources) {
-    const parts = src.quality.split(" · ")
-    const tag = "-" + (parts[1] ?? "").trim() // "-1080p eng"
-    // skip "eng" suffix
-    if (!tag.endsWith("eng")) {
-      dict[tag] = src.url
-    }
-  }
-  //console.log(dict)
-  return dict
+function getHeaders(sessionId?: string) {
+  return {
+    authority: 'animepahe.ru',
+    accept: 'application/json, text/javascript, */*; q=0.01',
+    'accept-language': 'en-US,en;q=0.9',
+    cookie: '__ddg2_=;',
+    dnt: '1',
+    'sec-ch-ua': '"Not A(Brand";v="99", "Microsoft Edge";v="121", "Chromium";v="121"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'x-requested-with': 'XMLHttpRequest',
+    referer: sessionId ? `${baseUrl}/anime/${sessionId}` : `${baseUrl}`,
+    'user-agent': USER_AGENT,
+  };
 }
 
-// ---- 2. Pick First Match From Quality Order ----
+async function extractKwikUrl(kwikUrl: string): Promise<string> {
+  const response = await fetch(kwikUrl, {
+    headers: { Referer: 'https://animepahe.ru/' },
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+
+  const html = await response.text();
+  const packedMatch = /(eval)(\(f.*?)(\n<\/script>)/s.exec(html);
+  if (!packedMatch) {
+    throw new Error('Could not find packed script');
+  }
+
+  const unpacked = eval(packedMatch[2].replace('eval', ''));
+  const m3u8Match = unpacked.match(/https.*?m3u8/);
+  if (!m3u8Match) {
+    throw new Error('Could not find m3u8 URL');
+  }
+
+  return m3u8Match[0];
+}
+
+function parseResolutionMenu(html: string) {
+  const buttons: { url: string; quality: string; audio?: string }[] = [];
+  const buttonRegex = /<button[^>]*data-src="([^"]*)"[^>]*>([^<]*)<\/button>/g;
+  let match;
+  
+  while ((match = buttonRegex.exec(html)) !== null) {
+    const dataSrc = match[1];
+    const quality = match[2].trim();
+    const audioMatch = new RegExp(`data-src="${dataSrc}"[^>]*data-audio="([^"]*)"`, 'g').exec(html);
+    
+    buttons.push({
+      url: dataSrc,
+      quality: quality,
+      audio: audioMatch ? audioMatch[1] : undefined,
+    });
+  }
+  
+  return buttons;
+}
+
+export async function getAnimepaheSources(episodeId: string): Promise<QualityMap> {
+  const response = await fetch(
+    `${baseUrl}/play/${episodeId}`,
+    { headers: getHeaders(episodeId.split('/')[0]) }
+  );
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+
+  const html = await response.text();
+  const buttons = parseResolutionMenu(html);
+
+  const dict: QualityMap = {};
+  
+  for (const button of buttons) {
+    const url = await extractKwikUrl(button.url);
+    const parts = button.quality.split(" · ");
+    const tag = "-" + (parts[1] ?? parts[0]).trim();
+    
+    // Skip "eng" suffix
+    if (!tag.endsWith("eng")) {
+      dict[tag] = url;
+    }
+  }
+
+  return dict;
+}
+
+// ---- Quality Selection ----
 
 export function qualityAutoSelect(
   qualities: QualityMap,
@@ -124,86 +179,69 @@ export function qualityAutoSelect(
   return undefined
 }
 
-// ---- 3. Extract HLS From Kwik ----
+// ---- Episode Number Logic ----
 
-export async function kwikExtractor(episodeLink: string): Promise<string> {
-  const res = await fetch(episodeLink, {
-    headers: { Referer: "https://animepahe.com" },
-  })
-  if (!res.ok) throw new Error(`kwikExtractor failed: ${res.status}`)
+export function episodeNumber(number: number, total: number, action: string) {
+  let output;
 
-  const html = await res.text()
-  const packedMatch = /(eval)(\(f.*?)(\n<\/script>)/s.exec(html)
-  if (!packedMatch) throw new Error("kwikExtractor: packed script not found")
-
-  const unpacked = eval(packedMatch[2].replace("eval", "")) as string
-  const hlsMatch = unpacked.match(/https.*?m3u8/)
-  if (!hlsMatch) throw new Error("kwikExtractor: m3u8 url not found")
-
-  return hlsMatch[0]
-}
-
-export function episodeNumber(number:number, total:number, action:string){
-	let output;
-
-  switch (action){
+  switch (action) {
     case 'Next':
-    		if (total>=(number+1)){
-        number++ 
-      		output = number 
-      }else{return -5}      
+      if (total >= (number + 1)) {
+        number++;
+        output = number;
+      } else {
+        return -5;
+      }
       break;
     
     case 'Resume':
-      output = number 
-    		break;
+      output = number;
+      break;
 
     case 'Add':
-      output = 0
+      output = 0;
       break;
-    	
+    
     case 'Jump':
-      output = -2
+      output = -2;
       break;
 
     case 'Continue':
-      if (total==(number+1)){
-        output = -3
-      }else{
-        output = -1
+      if (total == (number + 1)) {
+        output = -3;
+      } else {
+        output = -1;
       }
       break;
       
     case 'Choose':
-      output = -1
+      output = -1;
       break;
     
     case 'Watch':
-      if (total>1){
-        output = -1 
-      }else{
-        output = 1
+      if (total > 1) {
+        output = -1;
+      } else {
+        output = 1;
       }
       break;
     
     case 'Download':
-      if (total===1){
-        output = -3
-      }else{
-        output = -1
+      if (total === 1) {
+        output = -3;
+      } else {
+        output = -1;
       }
       break;
     default:
-			return output
+      return output;
   }
   
-  return output
-
-  
+  return output;
 }
 
+// ---- Get Episode ----
 
-// ---- 4. Build HLS URL ----
 export async function getEpisode(
   index: number,
   askQuality?: (options: string[]) => Promise<string>
@@ -218,31 +256,29 @@ export async function getEpisode(
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
   const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
 
-  const sources = await getAnimepaheSources(entry.ids[index - 1])        // tag -> url
+  const episodeId = entry.ids[index - 1]?.id || entry.ids[index - 1]
+  const sources = await getAnimepaheSources(episodeId)
   const tags = Object.keys(sources)
 
   let selectedUrl: string | undefined
 
   if (autoQuality) {
-    // try auto by current order
     selectedUrl = qualityAutoSelect(sources, order)
     if (!selectedUrl) {
-      // not found → ask once
       if (!askQuality) throw new Error("askQuality callback not provided")
       const pickedTag = await askQuality(tags)
 
-      // persist: put pickedTag at the front of order
       const filtered = order.filter(q => q !== pickedTag)
-const newOrder = [
-  ...filtered.slice(0, 2),   // keep first two as-is
-  pickedTag,                 // insert chosen tag here
-  ...filtered.slice(2)       // rest
-]
+      const newOrder = [
+        ...filtered.slice(0, 2),
+        pickedTag,
+        ...filtered.slice(2)
+      ]
 
-saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
-order = newOrder
+      saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
+      order = newOrder
 
-      selectedUrl = sources[pickedTag]   // must exist because it came from `tags`
+      selectedUrl = sources[pickedTag]
     }
   } else {
     if (!askQuality) throw new Error("askQuality callback not provided")
@@ -250,28 +286,38 @@ order = newOrder
     selectedUrl = sources[pickedTag]
   }
 
-  // Build HLS
-  const hls = await kwikExtractor(String(selectedUrl))
+  // selectedUrl is already the HLS m3u8 URL (no kwikExtractor needed)
   hideOverlay()
 
-  const finalUrl = player === "nPlayer" ? "-" + hls : hls.replace("https", "")
-  //console.log((player + finalUrl).toLowerCase())
+  const finalUrl = player === "nPlayer" ? "-" + selectedUrl : selectedUrl.replace("https", "")
   await Safari.openURL((player + finalUrl).toLowerCase())
 
   const stillUnread = index !== Number(entry.total)
+  
+  const updatedIds = entry.ids ? entry.ids.map(ep => 
+    ep.number === index ? { ...ep, isWatched: true } : ep
+  ) : undefined
+  
+  const updatedEntry = { ...entry, ids: updatedIds }
+  saveSetting("entry", updatedEntry)
+  
   const cacheEntry: Anime = {
     name: entry.name,
     source: entry.id,
     episodes: String(index) + "/" + entry.total,
     img: entry.img,
-    isUnread: stillUnread
+    isUnread: stillUnread,
+    ids: updatedIds,
+    id: entry.id,
+    description: entry.description,
+    status: entry.status
   }
 
-  saveSetting("entry", entry)
   addCache(cacheEntry)
   return cacheEntry
 }
 
+// ---- Download Episode ----
 
 export async function downloadEpisode(
   onProgress?: (done: number, total: number) => void,
@@ -292,18 +338,17 @@ export async function downloadEpisode(
 
   const links: string[] = [`mkdir ${entry.name.replaceAll(" ", "\\ ")}`]
 
-  // if we prompt, only ask once and reuse the same tag for whole batch
   let chosenTag: string | null = null
 
   for (let i = 0; i < total; i++) {
-    const sources = await getAnimepaheSources(ids[i])   // tag -> url
+    const episodeId = ids[i]?.id || ids[i]
+    const sources = await getAnimepaheSources(episodeId)
     const tags = Object.keys(sources)
 
     let url = qualityAutoSelect(sources, order)
 
     if (!url) {
       if (autoQuality) {
-        // try previously chosen tag if already asked this batch
         if (chosenTag) {
           url = sources[chosenTag]
         }
@@ -312,7 +357,6 @@ export async function downloadEpisode(
           if (!askQuality) throw new Error("askQuality callback not provided")
           chosenTag = await askQuality(tags)
 
-          // insert chosenTag at 3rd position in order
           const filtered = order.filter(q => q !== chosenTag)
           const newOrder = [
             ...filtered.slice(0, 2),
@@ -325,16 +369,15 @@ export async function downloadEpisode(
           url = sources[chosenTag]
         }
       } else {
-        // manual mode fallback
         if (!askQuality) throw new Error("askQuality callback not provided")
         chosenTag = await askQuality(tags)
         url = sources[chosenTag]
       }
     }
 
-    const hls = await kwikExtractor(String(url))
+    // url is already the HLS m3u8 URL
     const number = Number(entry.episode) + i
-    const link = `ffmpeg -i "${hls}" -c copy ~/Documents/${entry.name.replaceAll(" ","\\ ")}/${entry.name.replaceAll(" ","\\ ")}\\ -\\ ${number}.mp4`
+    const link = `ffmpeg -i "${url}" -c copy ~/Documents/${entry.name.replaceAll(" ", "\\ ")}/${entry.name.replaceAll(" ", "\\ ")}\\ -\\ ${number}.mp4`
     links.push(link)
 
     onProgress?.(i + 1, total)
@@ -344,13 +387,26 @@ export async function downloadEpisode(
     entry.episode === entry.total ? entry.episode : `${entry.episode} to ${entry.total}`
 
   const entryBool = ogEntry.episode != ogEntry.total
+  
+  const startEpisode = Number(entry.episode)
+  const updatedIds = ogEntry.ids ? ogEntry.ids.map(ep => {
+    const episodeNumber = ep.number
+    if (episodeNumber >= startEpisode && episodeNumber <= Number(entry.total)) {
+      return { ...ep, isWatched: true }
+    }
+    return ep
+  }) : undefined
 
   const cacheEntry: Anime = {
     name: entry.name,
     source: entry.id,
     episodes: `${ogEntry.episode}/${ogEntry.total}`,
     img: entry.img,
-    isUnread: entryBool
+    isUnread: entryBool,
+    ids: updatedIds,
+    id: entry.id,
+    description: entry.description,
+    status: entry.status
   }
 
   const queueEntry: DownloadAnime = {
