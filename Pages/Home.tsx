@@ -63,7 +63,7 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
   const QUEUE_KEY = "queue.last.homepage"
 
   const [showNumberSheet, setShowNumberSheet] = useState(false)
-  const [provider, setProvider] = useState<ProviderType>(loadSetting('settings.provider','Anilist'))
+  const [provider, setProvider] = useState<ProviderType>(loadSetting('settings.provider','Animepahe'))
 
   const [animes, setAnimes] = useState<Anime[]>([PlaceholderAnime])
   const [queue, setQueue] = useState<DownloadAnimeType[]>(loadSetting<DownloadAnimeType[]>(QUEUE_KEY, []))
@@ -447,7 +447,7 @@ function cleanupAfterQualityCancel() {
                   value={provider}
                   onChanged={(v: any) => setProvider(v as ProviderType)}
                 >
-                  <Text tag={"Anilist"}>Anilist</Text>
+                  {/* <Text tag={"Anilist"}>Anilist</Text> */}
                   <Text tag={"Animepahe"}>Animepahe</Text>
                 </Picker>
               </HStack>

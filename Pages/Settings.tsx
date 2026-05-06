@@ -226,7 +226,7 @@ export function SettingsPage() {
               value={Provider}
               onChanged={handleProviderChange}
             >
-              <Text tag={"Anilist"}>Anilist</Text>
+              {/* <Text tag={"Anilist"}>Anilist</Text> */}
               <Text tag={"Animepahe"}>Animepahe</Text>
             </Picker>
           </HStack>

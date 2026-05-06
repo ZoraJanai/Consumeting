@@ -67,6 +67,16 @@ async function fetchEpisodes(session: string, page: number) {
   console.log('[fetchEpisodes] Parsing JSON');
   const data = await response.json();
   console.log('[fetchEpisodes] Got', data.data?.length || 0, 'episodes');
+  
+  // Log full response structure on first page to see available metadata
+  if (page === 1) {
+    console.log('[fetchEpisodes] Response keys:', Object.keys(data));
+    if (data.data && data.data.length > 0) {
+      console.log('[fetchEpisodes] First episode keys:', Object.keys(data.data[0]));
+    }
+    // Check if there's any metadata about the anime itself
+    console.log('[fetchEpisodes] Full data structure:', JSON.stringify(data));
+  }
 
   return {
     episodes: data.data.map((item: any) => ({
@@ -90,10 +100,16 @@ async function fetchAnimepaheInfo(id: string) {
     allEpisodes.push(...pageData.episodes);
   }
 
-  console.log('[fetchAnimepaheInfo] DONE - total episodes:', allEpisodes.length);
+  // Filter to only include whole number episodes (exclude OVAs, specials like 0.5, 10.5, etc.)
+  const filteredEpisodes = allEpisodes.filter(ep => {
+    const num = Number(ep.number);
+    return Math.ceil(num) === num && num !== 0;
+  });
+
+  console.log('[fetchAnimepaheInfo] DONE - total episodes:', allEpisodes.length, 'filtered:', filteredEpisodes.length);
   return {
     id,
-    episodes: allEpisodes,
+    episodes: filteredEpisodes,
   };
 }
 
@@ -210,6 +226,12 @@ const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
     const data = await response.json();
     console.log('[searchAnimepahe] Got', data.data?.length || 0, 'results');
     
+    // Log first result to see available fields
+    if (data.data && data.data.length > 0) {
+      console.log('[searchAnimepahe] First result fields:', Object.keys(data.data[0]));
+      console.log('[searchAnimepahe] First result data:', JSON.stringify(data.data[0]));
+    }
+    
     const output: Anime[] = [];
     for (const item of data.data) {
       output.push({
@@ -255,18 +277,68 @@ const getInfoAnilist = async (anime: Anime): Promise<BaseInfo> => {
     const media = anilistData.data.Media;
     console.log('[getInfoAnilist] Got media:', media.title.romaji || media.title.english);
 
-    // Get episodes from Animepahe
-    const title = media.title.romaji || media.title.english;
-    console.log('[getInfoAnilist] Searching Animepahe for:', title);
-    const searchResults = await searchAnimepahe(title);
-    console.log('[getInfoAnilist] Animepahe search returned', Array.isArray(searchResults) ? searchResults.length : 0, 'results');
+    // Get episodes from Animepahe - try both romaji and english titles
+    const romajiTitle = media.title.romaji;
+    const englishTitle = media.title.english;
+    console.log('[getInfoAnilist] Searching Animepahe - romaji:', romajiTitle, 'english:', englishTitle);
     
     let episodes: any[] = [];
-    if (Array.isArray(searchResults) && searchResults.length > 0) {
-      console.log('[getInfoAnilist] Fetching Animepahe info for:', searchResults[0].source);
-      const animepaheInfo = await fetchAnimepaheInfo(searchResults[0].source);
-      episodes = animepaheInfo.episodes;
-      console.log('[getInfoAnilist] Got', episodes.length, 'episodes from Animepahe');
+    let matchFound = false;
+    
+    // Try romaji title first
+    if (romajiTitle) {
+      const searchResults = await searchAnimepahe(romajiTitle);
+      console.log('[getInfoAnilist] Romaji search returned', Array.isArray(searchResults) ? searchResults.length : 0, 'results');
+      
+      if (Array.isArray(searchResults) && searchResults.length > 0) {
+        // Try to find exact match first
+        let match = searchResults.find(result => 
+          result.name.toLowerCase() === romajiTitle.toLowerCase()
+        );
+        
+        // If no exact match, use first result
+        if (!match) {
+          match = searchResults[0];
+          console.log('[getInfoAnilist] No exact match, using first result:', match.name);
+        } else {
+          console.log('[getInfoAnilist] Found exact match:', match.name);
+        }
+        
+        console.log('[getInfoAnilist] Fetching Animepahe info for:', match.source);
+        const animepaheInfo = await fetchAnimepaheInfo(match.source);
+        episodes = animepaheInfo.episodes;
+        matchFound = true;
+        console.log('[getInfoAnilist] Got', episodes.length, 'episodes from Animepahe');
+      }
+    }
+    
+    // If romaji didn't work, try english title
+    if (!matchFound && englishTitle && englishTitle !== romajiTitle) {
+      console.log('[getInfoAnilist] Trying english title:', englishTitle);
+      const searchResults = await searchAnimepahe(englishTitle);
+      console.log('[getInfoAnilist] English search returned', Array.isArray(searchResults) ? searchResults.length : 0, 'results');
+      
+      if (Array.isArray(searchResults) && searchResults.length > 0) {
+        let match = searchResults.find(result => 
+          result.name.toLowerCase() === englishTitle.toLowerCase()
+        );
+        
+        if (!match) {
+          match = searchResults[0];
+          console.log('[getInfoAnilist] No exact match, using first result:', match.name);
+        } else {
+          console.log('[getInfoAnilist] Found exact match:', match.name);
+        }
+        
+        console.log('[getInfoAnilist] Fetching Animepahe info for:', match.source);
+        const animepaheInfo = await fetchAnimepaheInfo(match.source);
+        episodes = animepaheInfo.episodes;
+        console.log('[getInfoAnilist] Got', episodes.length, 'episodes from Animepahe');
+      }
+    }
+
+    if (episodes.length === 0) {
+      console.warn('[getInfoAnilist] WARNING: No episodes found on Animepahe for:', romajiTitle || englishTitle);
     }
 
     const ids: string[] = [];
