@@ -250,9 +250,13 @@ export async function getEpisode(
 ): Promise<Anime> {
   showOverlay()
 
+  console.log("running getEpisode");
+
   const noDownload: Anime = { name: "", source: "", episodes: "", img: "", isUnread: false }
   if (index === -44) return noDownload
 
+
+  console.log("fetch sources");
   const entry = loadSetting("entry", PlaceholderEntry)
   const autoQuality = loadSetting(STORAGE_KEYS.AUTO_QUALITY, true)
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
@@ -261,6 +265,9 @@ export async function getEpisode(
   const episodeId = entry.ids[index - 1]?.id || entry.ids[index - 1]
   const sources = await getAnimepaheSources(episodeId)
   const tags = Object.keys(sources)
+
+
+
 
   let selectedUrl: string | undefined
 
