@@ -26,12 +26,12 @@ interface BaseInfo {
 
 // ===== ANIMEPAHE DIRECT =====
 
-const baseUrl = 'https://animepahe.ru';
+const baseUrl = 'https://animepahe.pw';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
 function getHeaders(sessionId?: string) {
   return {
-    authority: 'animepahe.ru',
+    authority: 'animepahe.pw',
     accept: 'application/json, text/javascript, */*; q=0.01',
     'accept-language': 'en-US,en;q=0.9',
     cookie: '__ddg2_=;',
