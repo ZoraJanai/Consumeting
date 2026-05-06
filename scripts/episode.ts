@@ -129,32 +129,47 @@ async function extractKwikUrl(kwikUrl: string): Promise<string> {
   }
 }
 
+function decodeHtmlEntities(text: string): string {
+  const entities: Record<string, string> = {
+    '&middot;': '·',
+    '&nbsp;': ' ',
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#39;': "'",
+  };
+  
+  return text.replace(/&[a-z0-9#]+;/gi, (entity) => entities[entity] || entity);
+}
+
 function parseResolutionMenu(html: string) {
   console.log('[parseResolutionMenu] START - HTML length:', html.length);
   const buttons: { url: string; quality: string; audio?: string }[] = [];
   const buttonRegex = /<button[^>]*data-src="([^"]*)"[^>]*>([^<]*)<\/button>/g;
   console.log('[parseResolutionMenu] Regex created, starting search');
-  
+
   let match;
   let count = 0;
-  
+
   while ((match = buttonRegex.exec(html)) !== null) {
     count++;
     const dataSrc = match[1];
-    const quality = match[2].trim();
-    console.log(`[parseResolutionMenu] Found button ${count}: quality="${quality}", url="${dataSrc}"`);
-    
+    const rawQuality = match[2].trim();
+    const quality = decodeHtmlEntities(rawQuality);
+    console.log(`[parseResolutionMenu] Found button ${count}: quality="${quality}" (raw: "${rawQuality}"), url="${dataSrc}"`);
+
     const audioMatch = new RegExp(`data-src="${dataSrc}"[^>]*data-audio="([^"]*)"`, 'g').exec(html);
     const audio = audioMatch ? audioMatch[1] : undefined;
     console.log(`[parseResolutionMenu] Audio track: ${audio}`);
-    
+
     buttons.push({
       url: dataSrc,
       quality: quality,
       audio: audio,
     });
   }
-  
+
   console.log('[parseResolutionMenu] DONE - Found', buttons.length, 'buttons');
   return buttons;
 }
