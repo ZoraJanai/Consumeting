@@ -148,22 +148,34 @@ function decodeHtmlEntities(text: string): string {
 function parseResolutionMenu(html: string) {
   console.log('[parseResolutionMenu] START - HTML length:', html.length);
   const buttons: { url: string; quality: string; audio?: string }[] = [];
-  const buttonRegex = /<button[^>]*data-src="([^"]*)"[^>]*data-audio="([^"]*)"[^>]*class="dropdown-item[^"]*"[^>]*>([^<]*)<\/button>/g;
+  
+  // Match button tags with data-src attribute (attributes in any order)
+  const buttonRegex = /<button[^>]*class="dropdown-item[^"]*"[^>]*>(.*?)<\/button>/gs;
   console.log('[parseResolutionMenu] Regex created, starting search');
 
   let match;
   let count = 0;
 
   while ((match = buttonRegex.exec(html)) !== null) {
-    count++;
-    const dataSrc = match[1];
-    const rawQuality = match[2].trim();
-    const quality = decodeHtmlEntities(rawQuality);
-    console.log(`[parseResolutionMenu] Found button ${count}: quality="${quality}" (raw: "${rawQuality}"), url="${dataSrc}"`);
-
-    const audioMatch = new RegExp(`data-src="${dataSrc}"[^>]*data-audio="([^"]*)"`, 'g').exec(html);
+    const fullButton = match[0];
+    const innerText = match[1];
+    
+    // Extract data-src
+    const srcMatch = /data-src="([^"]*)"/.exec(fullButton);
+    if (!srcMatch) continue;
+    const dataSrc = srcMatch[1];
+    
+    // Extract data-audio
+    const audioMatch = /data-audio="([^"]*)"/.exec(fullButton);
     const audio = audioMatch ? audioMatch[1] : undefined;
-    console.log(`[parseResolutionMenu] Audio track: ${audio}`);
+    
+    // Extract quality text (before any <span> tag)
+    const textMatch = /^\s*(.*?)\s*(?:<span|$)/.exec(innerText);
+    const rawQuality = textMatch ? textMatch[1].trim() : innerText.trim();
+    const quality = decodeHtmlEntities(rawQuality);
+    
+    count++;
+    console.log(`[parseResolutionMenu] Found button ${count}: quality="${quality}" (raw: "${rawQuality}"), url="${dataSrc}", audio="${audio}"`);
 
     buttons.push({
       url: dataSrc,
