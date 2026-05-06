@@ -148,7 +148,7 @@ function decodeHtmlEntities(text: string): string {
 function parseResolutionMenu(html: string) {
   console.log('[parseResolutionMenu] START - HTML length:', html.length);
   const buttons: { url: string; quality: string; audio?: string }[] = [];
-  const buttonRegex = /<button[^>]*data-src="([^"]*)"[^>]*>([^<]*)<\/button>/g;
+  const buttonRegex = /<button[^>]*data-src="([^"]*)"[^>]*data-audio="([^"]*)"[^>]*class="dropdown-item[^"]*"[^>]*>([^<]*)<\/button>/g;
   console.log('[parseResolutionMenu] Regex created, starting search');
 
   let match;
