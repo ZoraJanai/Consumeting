@@ -58,12 +58,6 @@ export const QualitiesOrder = [
   "-360p",
 ]
 
-export const STORAGE_KEYS = {
-  VIDEO_PLAYER: "settings.videoPlayer",
-  AUTO_QUALITY: "settings.autoQuality",
-  QUALITY_ORDER: "settings.qualityOrder"
-}
-
 // ---- Direct Animepahe Source Fetching ----
 
 function getBaseUrl(): string {
