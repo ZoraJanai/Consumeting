@@ -25,6 +25,13 @@ let bootstrapInFlight: Promise<boolean> | null = null
 let sessionReady = false
 let webViewController: any = null
 
+type PendingWebViewFetch = {
+  resolve: (result: { status: number; body: string }) => void
+  reject: (err: Error) => void
+}
+
+let pendingWebViewFetch: PendingWebViewFetch | null = null
+
 function disposeWebViewController() {
   if (!webViewController) return
   try {
@@ -85,7 +92,7 @@ export function hasStoredSession(): boolean {
 }
 
 export function isSessionReady(): boolean {
-  return sessionReady && hasStoredSession()
+  return isWebViewSessionActive() || (sessionReady && hasStoredSession())
 }
 
 export function isChallengePage(body: string): boolean {
@@ -234,11 +241,141 @@ async function preloadStoredCookies(controller: any, baseUrl: string) {
   }
 }
 
+function buildWebViewFetchScript(requestUrl: string, referer: string, fetchMode: string): string {
+  return (
+    "(function(){fetch('" +
+    requestUrl +
+    "',{credentials:'include',headers:{Referer:'" +
+    referer +
+    "','Sec-Fetch-Site':'same-origin','Sec-Fetch-Mode':'" +
+    fetchMode +
+    "'}}).then(function(r){return r.text().then(function(t){window.webkit.messageHandlers.paheFetchDone.postMessage({status:r.status,body:t});});})" +
+    ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({status:0,body:String(e)});});})();"
+  )
+}
+
+function webViewFetchViaMessageHandler(
+  controller: any,
+  requestUrl: string,
+  referer: string,
+  fetchMode: string
+): Promise<{ status: number; body: string }> {
+  return new Promise(function (resolve, reject) {
+    if (!controller || !controller.evaluateJavaScript) {
+      reject(new Error("WebView evaluateJavaScript unavailable"))
+      return
+    }
+    if (pendingWebViewFetch) {
+      reject(new Error("WebView fetch already in progress"))
+      return
+    }
+
+    pendingWebViewFetch = { resolve: resolve, reject: reject }
+
+    controller.evaluateJavaScript(buildWebViewFetchScript(requestUrl, referer, fetchMode)).catch(function (err) {
+      if (pendingWebViewFetch) {
+        pendingWebViewFetch = null
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    })
+  })
+}
+
+async function registerWebViewHandlers(controller: any, baseUrl: string) {
+  const host = hostFromBaseUrl(baseUrl)
+
+  if (controller.addScriptMessageHandler) {
+    await controller.addScriptMessageHandler("paheFetchDone", function (payload: any) {
+      if (!pendingWebViewFetch) return "ok"
+
+      let data = payload
+      if (typeof payload === "string") {
+        try {
+          data = JSON.parse(payload)
+        } catch {
+          data = { status: 0, body: payload }
+        }
+      }
+
+      const pending = pendingWebViewFetch
+      pendingWebViewFetch = null
+      const status = data && data.status ? data.status : 0
+      const body = data && data.body ? data.body : ""
+      pending.resolve({ status: status, body: body })
+      return "ok"
+    })
+  } else {
+    console.log("[animepaheSession] addScriptMessageHandler unavailable")
+  }
+
+  controller.shouldAllowRequest = async function (request: any) {
+    if (!request || !request.url || request.url.indexOf(host) < 0) return true
+
+    const headers = request.headers || {}
+    const cookie = headers.Cookie || headers.cookie
+    if (cookie) {
+      saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), cookie))
+      console.log("[animepaheSession] Sniffed request Cookie length:", cookie.length)
+    }
+
+    injectContinueButton(controller)
+    return true
+  }
+}
+
+async function saveCookiesFromWebView(controller: any, baseUrl: string) {
+  const cookies = await captureCookies(controller, baseUrl)
+  const header = cookiesToHeader(cookies)
+  if (header) {
+    saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), header))
+    console.log("[animepaheSession] Saved cookie header length:", getStoredCookieHeader().length)
+  } else {
+    console.log("[animepaheSession] No exportable cookies (HttpOnly stay in WebView jar)")
+  }
+}
+
+async function probeApiInWebView(controller: any, baseUrl: string): Promise<boolean> {
+  const probeUrl = baseUrl + "/api?m=search&q=a"
+  const referer = baseUrl + "/"
+
+  try {
+    const result = await webViewFetchViaMessageHandler(controller, probeUrl, referer, "cors")
+    const body = result.body || ""
+    const ok = result.status === 200 && isLikelyJsonApi(body) && !isChallengePage(body)
+    if (!ok) {
+      console.log("[animepaheSession] WebView probe status:", result.status, "body:", body.slice(0, 80))
+    }
+    return ok
+  } catch (err) {
+    console.log("[animepaheSession] WebView probe failed:", err)
+    return false
+  }
+}
+
+async function injectContinueButton(controller: any) {
+  if (!controller.evaluateJavaScript) return
+
+  const script =
+    "(function(){function addBtn(){if(!window.webkit||!window.webkit.messageHandlers||!window.webkit.messageHandlers.paheContinue)return;" +
+    "if(document.getElementById('pahe-continue'))return;var btn=document.createElement('button');btn.id='pahe-continue';" +
+    "btn.textContent='Continue to app';btn.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:16px 24px;font-size:17px;font-weight:600;background:#007AFF;color:#fff;border:none;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.35);';" +
+    "btn.onclick=function(){window.webkit.messageHandlers.paheContinue.postMessage('');};" +
+    "(document.body||document.documentElement).appendChild(btn);}addBtn();" +
+    "try{new MutationObserver(addBtn).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();"
+
+  try {
+    await controller.evaluateJavaScript(script)
+  } catch (err) {
+    console.log("[animepaheSession] Continue button inject failed:", err)
+  }
+}
+
 async function captureCookiesFromDocument(controller: any): Promise<WebCookie[]> {
   if (!controller.evaluateJavaScript) return []
 
   try {
     const raw = await controller.evaluateJavaScript("return document.cookie || ''")
+    console.log("[animepaheSession] document.cookie length:", raw ? String(raw).length : 0)
     if (!raw || typeof raw !== "string" || !raw.trim()) return []
 
     const cookies: WebCookie[] = []
@@ -258,7 +395,8 @@ async function captureCookiesFromDocument(controller: any): Promise<WebCookie[]>
       })
     }
     return cookies
-  } catch {
+  } catch (err) {
+    console.log("[animepaheSession] document.cookie failed:", err)
     return []
   }
 }
@@ -343,58 +481,16 @@ async function captureCookies(controller: any, baseUrl: string): Promise<WebCook
   return filtered
 }
 
-async function warmupApiInWebView(controller: any, baseUrl: string): Promise<boolean> {
-  if (!controller.evaluateJavaScript) return false
-
-  const probeUrl = baseUrl + "/api?m=search&q=a"
-  const referer = baseUrl + "/"
-  const script =
-    "return fetch('" +
-    probeUrl +
-    "', { credentials: 'include', headers: { Referer: '" +
-    referer +
-    "', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors' } })" +
-    ".then(function(r) { return r.text().then(function(t) { return r.status + '|' + t.slice(0, 120); }); })"
-
-  try {
-    const result = await controller.evaluateJavaScript(script)
-    if (!result || typeof result !== "string") return false
-    const parts = result.split("|")
-    const status = parseInt(parts[0], 10)
-    const body = parts.slice(1).join("|")
-    return status === 200 && isLikelyJsonApi(body) && !isChallengePage(body)
-  } catch {
-    return false
-  }
-}
-
 /** Run a fetch inside the live WebView (HttpOnly cookies stay in the jar). */
 export async function webViewFetch(
   requestUrl: string,
   referer: string,
   fetchMode: "cors" | "navigate" = "cors"
 ): Promise<{ status: number; body: string }> {
-  if (!webViewController || !webViewController.evaluateJavaScript) {
+  if (!webViewController) {
     throw new Error("No active WebView session")
   }
-
-  const script =
-    "return fetch('" +
-    requestUrl +
-    "', { credentials: 'include', headers: { Referer: '" +
-    referer +
-    "', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': '" +
-    fetchMode +
-    "' } })" +
-    ".then(function(r) { return r.text().then(function(t) { return JSON.stringify({ status: r.status, body: t }); }); })"
-
-  const raw = await webViewController.evaluateJavaScript(script)
-  if (!raw || typeof raw !== "string") {
-    throw new Error("WebView fetch returned no data")
-  }
-
-  const parsed = JSON.parse(raw)
-  return { status: parsed.status, body: parsed.body }
+  return webViewFetchViaMessageHandler(webViewController, requestUrl, referer, fetchMode)
 }
 
 async function probeApi(baseUrl: string): Promise<boolean> {
@@ -414,47 +510,51 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
   const controller = new WebViewController()
   webViewController = controller
 
+  let webViewProbeOk = false
+
   try {
+    await registerWebViewHandlers(controller, baseUrl)
+
+    if (controller.addScriptMessageHandler) {
+      await controller.addScriptMessageHandler("paheContinue", async function () {
+        console.log("[animepaheSession] Continue tapped — saving session from live WebView")
+        await saveCookiesFromWebView(controller, baseUrl)
+        webViewProbeOk = await probeApiInWebView(controller, baseUrl)
+        console.log("[animepaheSession] WebView probe while open:", webViewProbeOk ? "ok" : "failed")
+        if (controller.dismiss) controller.dismiss()
+        return "ok"
+      })
+    }
+
     await preloadStoredCookies(controller, baseUrl)
     await controller.loadURL(baseUrl + "/")
     if (controller.waitForLoad) await controller.waitForLoad()
+    await injectContinueButton(controller)
 
     await controller.present({
       fullscreen: true,
-      navigationTitle: "Complete verification",
+      navigationTitle: "Verify site, then tap Continue",
     })
 
-    if (controller.reload) {
-      await controller.reload()
-      if (controller.waitForLoad) await controller.waitForLoad()
+    if (!webViewProbeOk) {
+      console.log("[animepaheSession] Sheet closed — probing live WebView session")
+      await saveCookiesFromWebView(controller, baseUrl)
+      webViewProbeOk = await probeApiInWebView(controller, baseUrl)
     }
 
-    const warmed = await warmupApiInWebView(controller, baseUrl)
-    console.log("[animepaheSession] WebView API warmup:", warmed ? "ok" : "failed")
-
-    const cookies = await captureCookies(controller, baseUrl)
-    const header = cookiesToHeader(cookies)
-    if (header) {
-      saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), header))
-      console.log("[animepaheSession] Saved cookie header length:", getStoredCookieHeader().length)
-      const missing = missingSessionCookies(getStoredCookieHeader())
-      if (missing.length) {
-        console.log("[animepaheSession] Still missing cookies:", missing.join(", "))
-      }
-    } else {
-      console.log("[animepaheSession] No cookies captured from WebView")
-    }
-
-    const probeOk = await probeApi(baseUrl)
+    const probeOk = getStoredCookieHeader() ? await probeApi(baseUrl) : false
     if (probeOk) {
       saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false)
+      sessionReady = true
       disposeWebViewController()
+      console.log("[animepaheSession] Exported cookies work with fetch()")
       return true
     }
 
-    if (warmed) {
-      console.log("[animepaheSession] Keeping WebView alive for in-page requests")
+    if (webViewProbeOk) {
       saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, true)
+      sessionReady = true
+      console.log("[animepaheSession] Live WebView session active — requests run inside WebView")
       return true
     }
 
@@ -499,6 +599,7 @@ async function runBootstrap(): Promise<boolean> {
 
 /** Load animepahe main page on boot. On 403/challenge, open WebView and save cookies for later requests. */
 export async function bootstrapAnimepaheSession(): Promise<boolean> {
+  if (isWebViewSessionActive()) return true
   if (sessionReady && hasStoredSession()) return true
   if (bootstrapInFlight) return bootstrapInFlight
 

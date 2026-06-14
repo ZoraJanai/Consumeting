@@ -264,7 +264,7 @@ export function SettingsPage() {
             action={verifyAnimepahe}
           />
           <Button
-            title="Paste Animepahe cookies"
+            title="Paste Animepahe cookies (from browser DevTools)"
             action={pasteAnimepaheCookies}
           />
           <Button
