@@ -1,5 +1,10 @@
 import { fetch } from "scripting"
 import { loadSetting, STORAGE_KEYS } from "../Pages/Settings"
+import {
+  getStoredCookieHeader,
+  handleBlockedResponse,
+  isBlockedResponse,
+} from "./cloudflareBypass"
 
 type PaginationInfo = { lastPage?: number }
 type StreamSource = {
@@ -19,10 +24,6 @@ function getBaseUrl(): string {
 
 function getApiBaseUrl(): string {
   return loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "").replace(/\/$/, "")
-}
-
-function getCookies(): string {
-  return loadSetting(STORAGE_KEYS.ANIMEPAHE_COOKIES, "").trim()
 }
 
 function useApiMode(): boolean {
@@ -46,25 +47,53 @@ function directHeaders(sessionId?: string): Record<string, string> {
     "User-Agent": USER_AGENT,
   }
 
-  const cookies = getCookies()
+  const cookies = getStoredCookieHeader()
   if (cookies) headers.Cookie = cookies
 
   return headers
 }
 
-async function directGet(url: string, sessionId?: string) {
-  const response = await fetch(url, { headers: directHeaders(sessionId) })
-  if (!response.ok) {
-    const body = await response.text()
-    console.error("[animepaheClient] HTTP", response.status, body.slice(0, 200))
-    if (response.status === 403 && !getCookies()) {
-      throw new Error(
-        "Animepahe blocked the request (403). Open animepahe.pw in Safari, then paste your cookies in Settings."
-      )
+function playPageHeaders(sessionId: string): Record<string, string> {
+  const baseUrl = getBaseUrl()
+  const headers: Record<string, string> = {
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: `${baseUrl}/anime/${sessionId}`,
+    "User-Agent": USER_AGENT,
+  }
+
+  const cookies = getStoredCookieHeader()
+  if (cookies) headers.Cookie = cookies
+
+  return headers
+}
+
+async function directFetch(url: string, headers: Record<string, string>, retried = false): Promise<string> {
+  const response = await fetch(url, { headers })
+  const body = await response.text()
+
+  if (isBlockedResponse(response.status, body)) {
+    const bypassed = await handleBlockedResponse(getBaseUrl(), response.status, body, retried)
+    if (bypassed) {
+      const nextHeaders = { ...headers }
+      const cookies = getStoredCookieHeader()
+      if (cookies) nextHeaders.Cookie = cookies
+      return directFetch(url, nextHeaders, true)
     }
+    throw new Error("Animepahe verification failed or was cancelled")
+  }
+
+  if (!response.ok) {
+    console.error("[animepaheClient] HTTP", response.status, body.slice(0, 200))
     throw new Error(`Animepahe error ${response.status}`)
   }
-  return response.json()
+
+  return body
+}
+
+async function directGet(url: string, sessionId?: string) {
+  const body = await directFetch(url, directHeaders(sessionId))
+  return JSON.parse(body)
 }
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -162,8 +191,10 @@ export async function paheFetchAllEpisodes(session: string) {
   })
 }
 
-export function getDirectPlayHeaders(sessionId: string): Record<string, string> {
-  return directHeaders(sessionId)
+export async function directFetchPlayPage(episodeId: string): Promise<string> {
+  const baseUrl = getBaseUrl()
+  const animeSession = episodeId.split("/")[0]
+  return directFetch(`${baseUrl}/play/${episodeId}`, playPageHeaders(animeSession))
 }
 
 export function getDirectBaseUrl(): string {

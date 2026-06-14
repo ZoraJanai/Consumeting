@@ -6,8 +6,8 @@ import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
 import {
+  directFetchPlayPage,
   getDirectBaseUrl,
-  getDirectPlayHeaders,
   paheFetchStreamingSourcesFromApi,
 } from "./animepaheClient"
 
@@ -155,18 +155,7 @@ function parseResolutionMenu(html: string) {
 }
 
 async function scrapePlayPageSources(episodeId: string): Promise<QualityMap> {
-  const baseUrl = getDirectBaseUrl()
-  const animeSession = episodeId.split("/")[0]
-
-  const response = await fetch(`${baseUrl}/play/${episodeId}`, {
-    headers: getDirectPlayHeaders(animeSession),
-  })
-
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`)
-  }
-
-  const html = await response.text()
+  const html = await directFetchPlayPage(episodeId)
   const buttons = parseResolutionMenu(html)
   const dict: QualityMap = {}
 

@@ -3,6 +3,11 @@ import {
   Button, EditButton, ForEach, List, Navigation, NavigationStack, Picker, 
   Section, Text, Toggle, useState, HStack, useEffect 
 } from "scripting"
+import {
+  clearStoredSession,
+  hasStoredSession,
+  presentCloudflareBypass,
+} from "../scripts/cloudflareBypass"
 
 type VideoPlayerType = "nPlayer" | "Outplayer"
 type ProviderType = "Anilist" | "Animepahe"
@@ -150,9 +155,7 @@ export function SettingsPage() {
   const [animepaheApiUrl, setAnimepaheApiUrl] = useState(
     loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "")
   )
-  const [animepaheCookies, setAnimepaheCookies] = useState(
-    loadSetting(STORAGE_KEYS.ANIMEPAHE_COOKIES, "")
-  )
+  const [sessionActive, setSessionActive] = useState(hasStoredSession())
   const [rustProxyUrl, setRustProxyUrl] = useState(
     loadSetting(STORAGE_KEYS.RUST_PROXY_URL, "https://rust-proxy-hvm4.onrender.com")
   )
@@ -198,17 +201,14 @@ export function SettingsPage() {
     }
   }
 
-  async function editAnimepaheCookies() {
-    const input = await Dialog.prompt({
-      title: "Animepahe Cookies",
-      message: "Paste cookies from animepahe.pw if you get 403 errors. Leave empty to skip.",
-      value: animepaheCookies
-    })
-    if (input != null) {
-      const value = input.trim()
-      setAnimepaheCookies(value)
-      saveSetting(STORAGE_KEYS.ANIMEPAHE_COOKIES, value)
-    }
+  async function verifyAnimepahe() {
+    await presentCloudflareBypass(animepaheBaseUrl)
+    setSessionActive(hasStoredSession())
+  }
+
+  function clearAnimepaheSession() {
+    clearStoredSession()
+    setSessionActive(false)
   }
 
   async function editRustProxyUrl() {
@@ -272,8 +272,13 @@ export function SettingsPage() {
             action={editAnimepaheBaseUrl}
           />
           <Button
-            title={animepaheCookies ? "Cookies: configured" : "Cookies: not set (403 fix)"}
-            action={editAnimepaheCookies}
+            title={sessionActive ? "Animepahe session: active" : "Animepahe session: not verified"}
+            action={verifyAnimepahe}
+          />
+          <Button
+            title="Clear Animepahe session"
+            role="destructive"
+            action={clearAnimepaheSession}
           />
           <Button
             title={animepaheApiUrl ? `API: ${animepaheApiUrl}` : "API: off (direct scrape)"}
