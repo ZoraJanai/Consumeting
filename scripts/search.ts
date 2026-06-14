@@ -1,5 +1,5 @@
 import { fetch } from "scripting"
-import { loadSetting, STORAGE_KEYS } from "../Pages/Settings"
+import { paheFetchAllEpisodes, paheSearch } from "./animepaheClient"
 
 // Type definitions
 type Anime = {
@@ -23,94 +23,13 @@ interface BaseInfo {
   name: string
 }
 
-// ===== ANIMEPAHE DIRECT =====
-
-function getBaseUrl(): string {
-  return loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, 'https://animepahe.pw')
-}
-
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
-
-function getHeaders(sessionId?: string) {
-  const baseUrl = getBaseUrl()
-  return {
-    authority: 'animepahe.pw',
-    accept: 'application/json, text/javascript, */*; q=0.01',
-    'accept-language': 'en-US,en;q=0.9',
-    cookie: '__ddg2_=;',
-    dnt: '1',
-    'sec-ch-ua': '"Not A(Brand";v="99", "Microsoft Edge";v="121", "Chromium";v="121"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Windows"',
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-origin',
-    'x-requested-with': 'XMLHttpRequest',
-    referer: sessionId ? `${baseUrl}/anime/${sessionId}` : `${baseUrl}`,
-    'user-agent': USER_AGENT,
-  };
-}
-
-async function fetchEpisodes(session: string, page: number) {
-  console.log(`[fetchEpisodes] Fetching session: ${session}, page: ${page}`);
-  const baseUrl = getBaseUrl()
-  const response = await fetch(
-    `${baseUrl}/api?m=release&id=${session}&sort=episode_asc&page=${page}`,
-    { headers: getHeaders(session) }
-  );
-
-  if (!response.ok) {
-    console.error('[fetchEpisodes] HTTP error:', response.status);
-    throw new Error(`HTTP error! status: ${response.status}`);
-  }
-
-  console.log('[fetchEpisodes] Parsing JSON');
-  const data = await response.json();
-  console.log('[fetchEpisodes] Got', data.data?.length || 0, 'episodes');
-  
-  // Log full response structure on first page to see available metadata
-  if (page === 1) {
-    console.log('[fetchEpisodes] Response keys:', Object.keys(data));
-    if (data.data && data.data.length > 0) {
-      console.log('[fetchEpisodes] First episode keys:', Object.keys(data.data[0]));
-    }
-    // Check if there's any metadata about the anime itself
-    console.log('[fetchEpisodes] Full data structure:', JSON.stringify(data));
-  }
-
-  return {
-    episodes: data.data.map((item: any) => ({
-      id: `${session}/${item.session}`,
-      number: item.episode,
-    })),
-    lastPage: data.last_page,
-  };
-}
+// ===== ANIMEPAHE API =====
 
 async function fetchAnimepaheInfo(id: string) {
   console.log('[fetchAnimepaheInfo] START - id:', id);
-  console.log('[fetchAnimepaheInfo] Fetching page 1');
-  const firstPage = await fetchEpisodes(id, 1);
-  console.log('[fetchAnimepaheInfo] Got', firstPage.episodes.length, 'episodes from page 1, total pages:', firstPage.lastPage);
-  const allEpisodes = [...firstPage.episodes];
-
-  for (let page = 2; page <= firstPage.lastPage; page++) {
-    console.log(`[fetchAnimepaheInfo] Fetching page ${page}/${firstPage.lastPage}`);
-    const pageData = await fetchEpisodes(id, page);
-    allEpisodes.push(...pageData.episodes);
-  }
-
-  // Filter to only include whole number episodes (exclude OVAs, specials like 0.5, 10.5, etc.)
-  const filteredEpisodes = allEpisodes.filter(ep => {
-    const num = Number(ep.number);
-    return Math.ceil(num) === num && num !== 0;
-  });
-
-  console.log('[fetchAnimepaheInfo] DONE - total episodes:', allEpisodes.length, 'filtered:', filteredEpisodes.length);
-  return {
-    id,
-    episodes: filteredEpisodes,
-  };
+  const episodes = await paheFetchAllEpisodes(id);
+  console.log('[fetchAnimepaheInfo] DONE - episodes:', episodes.length);
+  return { id, episodes };
 }
 
 // ===== ANILIST DIRECT =====
@@ -204,44 +123,20 @@ const searchAnilist = async (query: string): Promise<Anime[] | string> => {
   }
 }
 
-// Search Animepahe directly
+// Search Animepahe via self-hosted animepahe-api
 const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
   console.log('[searchAnimepahe] START - query:', query);
   try {
-    const baseUrl = getBaseUrl()
-    const cleanQuery = query.replaceAll(/[^\p{L}\p{N}\s]/gu, "");
-    console.log('[searchAnimepahe] Clean query:', cleanQuery);
-    console.log('[searchAnimepahe] Fetching search results');
-    const response = await fetch(
-      `${baseUrl}/api?m=search&q=${encodeURIComponent(cleanQuery)}`,
-      { headers: getHeaders() }
-    );
+    const results = await paheSearch(query);
+    console.log('[searchAnimepahe] Got', results.length, 'results');
 
-    if (!response.ok) {
-      console.error('[searchAnimepahe] HTTP error:', response.status);
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    console.log('[searchAnimepahe] Parsing JSON');
-    const data = await response.json();
-    console.log('[searchAnimepahe] Got', data.data?.length || 0, 'results');
-    
-    // Log first result to see available fields
-    if (data.data && data.data.length > 0) {
-      console.log('[searchAnimepahe] First result fields:', Object.keys(data.data[0]));
-      console.log('[searchAnimepahe] First result data:', JSON.stringify(data.data[0]));
-    }
-    
-    const output: Anime[] = [];
-    for (const item of data.data) {
-      output.push({
-        name: item.title,
-        source: String(item.session),
-        episodes: "0",
-        img: item.poster,
-        isUnread: false
-      });
-    }
+    const output: Anime[] = results.map(item => ({
+      name: item.title,
+      source: String(item.session),
+      episodes: "0",
+      img: item.poster,
+      isUnread: false,
+    }));
 
     console.log('[searchAnimepahe] DONE - returning', output.length, 'results');
     return output;

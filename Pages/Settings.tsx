@@ -21,6 +21,8 @@ export const STORAGE_KEYS = {
   CACHE_PATH: "cache.path",
   QUEUE_PATH: "queue.path",
   ANIMEPAHE_BASE_URL: "settings.animepaheBaseUrl",
+  ANIMEPAHE_API_URL: "settings.animepaheApiUrl",
+  ANIMEPAHE_COOKIES: "settings.animepaheCookies",
   RUST_PROXY_URL: "settings.rustProxyUrl"
 }
 
@@ -145,6 +147,12 @@ export function SettingsPage() {
   const [animepaheBaseUrl, setAnimepaheBaseUrl] = useState(
     loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, "https://animepahe.pw")
   )
+  const [animepaheApiUrl, setAnimepaheApiUrl] = useState(
+    loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "")
+  )
+  const [animepaheCookies, setAnimepaheCookies] = useState(
+    loadSetting(STORAGE_KEYS.ANIMEPAHE_COOKIES, "")
+  )
   const [rustProxyUrl, setRustProxyUrl] = useState(
     loadSetting(STORAGE_KEYS.RUST_PROXY_URL, "https://rust-proxy-hvm4.onrender.com")
   )
@@ -164,16 +172,42 @@ export function SettingsPage() {
     saveSetting(STORAGE_KEYS.AUTO_QUALITY, enabled)
   }
 
-  async function editAnimepaheUrl() {
+  async function editAnimepaheBaseUrl() {
     const input = await Dialog.prompt({
       title: "Animepahe Base URL",
-      message: "Enter the Animepahe base URL",
+      message: "Default is https://animepahe.pw",
       value: animepaheBaseUrl
     })
-    if (input && input.trim()) {
-      const newUrl = input.trim()
+    if (input != null && input.trim()) {
+      const newUrl = input.trim().replace(/\/$/, "")
       setAnimepaheBaseUrl(newUrl)
       saveSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, newUrl)
+    }
+  }
+
+  async function editAnimepaheApiUrl() {
+    const input = await Dialog.prompt({
+      title: "Animepahe API URL (optional)",
+      message: "Leave empty for direct scraping. Set only if you use a hosted animepahe-api instance.",
+      value: animepaheApiUrl
+    })
+    if (input != null) {
+      const newUrl = input.trim().replace(/\/$/, "")
+      setAnimepaheApiUrl(newUrl)
+      saveSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, newUrl)
+    }
+  }
+
+  async function editAnimepaheCookies() {
+    const input = await Dialog.prompt({
+      title: "Animepahe Cookies",
+      message: "Paste cookies from animepahe.pw if you get 403 errors. Leave empty to skip.",
+      value: animepaheCookies
+    })
+    if (input != null) {
+      const value = input.trim()
+      setAnimepaheCookies(value)
+      saveSetting(STORAGE_KEYS.ANIMEPAHE_COOKIES, value)
     }
   }
 
@@ -235,7 +269,15 @@ export function SettingsPage() {
         <Section header={<Text>URLs</Text>}>
           <Button
             title={`Animepahe: ${animepaheBaseUrl}`}
-            action={editAnimepaheUrl}
+            action={editAnimepaheBaseUrl}
+          />
+          <Button
+            title={animepaheCookies ? "Cookies: configured" : "Cookies: not set (403 fix)"}
+            action={editAnimepaheCookies}
+          />
+          <Button
+            title={animepaheApiUrl ? `API: ${animepaheApiUrl}` : "API: off (direct scrape)"}
+            action={editAnimepaheApiUrl}
           />
           <Button
             title={`Proxy: ${rustProxyUrl}`}

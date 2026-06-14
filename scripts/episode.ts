@@ -1,10 +1,15 @@
-// Episode handling with direct Animepahe scraping
-import { fetch, useState } from "scripting"
+// Episode handling — direct animepahe scraping (animepahe-api repo style)
+import { fetch } from "scripting"
 import { loadSetting, saveSetting, STORAGE_KEYS } from "../Pages/Settings"
 import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
+import {
+  getDirectBaseUrl,
+  getDirectPlayHeaders,
+  paheFetchStreamingSourcesFromApi,
+} from "./animepaheClient"
 
 // ---- Types ----
 
@@ -58,207 +63,135 @@ export const QualitiesOrder = [
   "-360p",
 ]
 
-// ---- Direct Animepahe Source Fetching ----
-
 function sanitizeFilename(name: string): string {
   return name
-    // Replace filesystem-unsafe characters
-    .replaceAll(":", " -")      // Colon (problematic in macOS/iOS)
-    .replaceAll("/", "-")        // Forward slash (directory separator)
-    .replaceAll("\\", "-")       // Backslash (directory separator in Windows)
-    .replaceAll("|", "-")        // Pipe (shell operator)
-    .replaceAll("?", "")         // Question mark (URL/shell)
-    .replaceAll("*", "")         // Asterisk (shell wildcard)
-    .replaceAll("<", "")         // Less than (shell redirect)
-    .replaceAll(">", "")         // Greater than (shell redirect)
-    .replaceAll('"', "")         // Double quote (shell)
-    .replaceAll("'", "")         // Single quote (shell)
-    .replaceAll("`", "")         // Backtick (shell)
-    .replaceAll("$", "")         // Dollar sign (shell variable)
-    .replaceAll("&", "and")      // Ampersand (shell operator)
-    .replaceAll(";", "")         // Semicolon (shell separator)
-    .replaceAll("(", "")         // Parentheses (shell)
+    .replaceAll(":", " -")
+    .replaceAll("/", "-")
+    .replaceAll("\\", "-")
+    .replaceAll("|", "-")
+    .replaceAll("?", "")
+    .replaceAll("*", "")
+    .replaceAll("<", "")
+    .replaceAll(">", "")
+    .replaceAll('"', "")
+    .replaceAll("'", "")
+    .replaceAll("`", "")
+    .replaceAll("$", "")
+    .replaceAll("&", "and")
+    .replaceAll(";", "")
+    .replaceAll("(", "")
     .replaceAll(")", "")
-    .replaceAll("[", "")         // Brackets (shell)
+    .replaceAll("[", "")
     .replaceAll("]", "")
-    .replaceAll("{", "")         // Braces (shell)
+    .replaceAll("{", "")
     .replaceAll("}", "")
-    .replaceAll("#", "")         // Hash (URL fragment)
-    .replaceAll("%", "")         // Percent (URL encoding)
+    .replaceAll("#", "")
+    .replaceAll("%", "")
     .trim()
-}
-
-function getBaseUrl(): string {
-  return loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, 'https://animepahe.pw')
 }
 
 function getRustProxyUrl(): string {
   return loadSetting(STORAGE_KEYS.RUST_PROXY_URL, 'https://rust-proxy-hvm4.onrender.com')
 }
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
-
-function getHeaders(sessionId?: string) {
-  const baseUrl = getBaseUrl()
-  return {
-    authority: 'animepahe.pw',
-    accept: 'application/json, text/javascript, */*; q=0.01',
-    'accept-language': 'en-US,en;q=0.9',
-    cookie: '__ddg2_=;',
-    dnt: '1',
-    'sec-ch-ua': '"Not A(Brand";v="99", "Microsoft Edge";v="121", "Chromium";v="121"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Windows"',
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-origin',
-    'x-requested-with': 'XMLHttpRequest',
-    referer: sessionId ? `${baseUrl}/anime/${sessionId}` : `${baseUrl}`,
-    'user-agent': USER_AGENT,
-  };
+function useApiMode(): boolean {
+  return loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "").trim().length > 0
 }
 
 async function extractKwikUrl(kwikUrl: string): Promise<string> {
-  console.log('[extractKwikUrl] Fetching:', kwikUrl);
-  
   const response = await fetch(kwikUrl, {
-    headers: { Referer: 'https://animepahe.pw/' },
-  });
+    headers: { Referer: `${getDirectBaseUrl()}/` },
+  })
 
   if (!response.ok) {
-    console.error('[extractKwikUrl] HTTP error:', response.status);
-    throw new Error(`HTTP error! status: ${response.status}`);
+    throw new Error(`HTTP error! status: ${response.status}`)
   }
 
-  console.log('[extractKwikUrl] Got response, parsing HTML');
-  const html = await response.text();
-  console.log('[extractKwikUrl] HTML length:', html.length);
-  
-  const packedMatch = /(eval)(\(f.*?)(\n<\/script>)/s.exec(html);
-  if (!packedMatch) {
-    console.error('[extractKwikUrl] Could not find packed script in HTML');
-    throw new Error('Could not find packed script');
-  }
+  const html = await response.text()
+  const packedMatch = /(eval)(\(f.*?)(\n<\/script>)/s.exec(html)
+  if (!packedMatch) throw new Error("Could not find packed script")
 
-  console.log('[extractKwikUrl] Found packed script, unpacking...');
-  try {
-    const unpacked = eval(packedMatch[2].replace('eval', ''));
-    console.log('[extractKwikUrl] Unpacked, searching for m3u8');
-    
-    const m3u8Match = unpacked.match(/https.*?m3u8/);
-    if (!m3u8Match) {
-      console.error('[extractKwikUrl] Could not find m3u8 in unpacked:', unpacked.substring(0, 200));
-      throw new Error('Could not find m3u8 URL');
-    }
+  const unpacked = eval(packedMatch[2].replace("eval", ""))
+  const m3u8Match = unpacked.match(/https.*?m3u8/)
+  if (!m3u8Match) throw new Error("Could not find m3u8 URL")
 
-    console.log('[extractKwikUrl] Found m3u8:', m3u8Match[0]);
-    return m3u8Match[0];
-  } catch (err) {
-    console.error('[extractKwikUrl] eval() failed:', err);
-    throw new Error('Failed to unpack Kwik script: ' + err);
-  }
+  return m3u8Match[0]
 }
 
 function decodeHtmlEntities(text: string): string {
   const entities: Record<string, string> = {
-    '&middot;': '·',
-    '&nbsp;': ' ',
-    '&amp;': '&',
-    '&lt;': '<',
-    '&gt;': '>',
-    '&quot;': '"',
-    '&#39;': "'",
-  };
-  
-  return text.replace(/&[a-z0-9#]+;/gi, (entity) => entities[entity] || entity);
+    "&middot;": "·",
+    "&nbsp;": " ",
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&#39;": "'",
+  }
+  return text.replace(/&[a-z0-9#]+;/gi, entity => entities[entity] || entity)
 }
 
 function parseResolutionMenu(html: string) {
-  console.log('[parseResolutionMenu] START - HTML length:', html.length);
-  const buttons: { url: string; quality: string; audio?: string }[] = [];
-  
-  // Match button tags with data-src attribute (attributes in any order)
-  const buttonRegex = /<button[^>]*class="dropdown-item[^"]*"[^>]*>(.*?)<\/button>/gs;
-  console.log('[parseResolutionMenu] Regex created, starting search');
+  const buttons: { url: string; quality: string }[] = []
+  const buttonRegex = /<button[^>]*class="dropdown-item[^"]*"[^>]*>(.*?)<\/button>/gs
 
-  let match;
-  let count = 0;
-
+  let match
   while ((match = buttonRegex.exec(html)) !== null) {
-    const fullButton = match[0];
-    const innerText = match[1];
-    
-    // Extract data-src
-    const srcMatch = /data-src="([^"]*)"/.exec(fullButton);
-    if (!srcMatch) continue;
-    const dataSrc = srcMatch[1];
-    
-    // Extract data-audio
-    const audioMatch = /data-audio="([^"]*)"/.exec(fullButton);
-    const audio = audioMatch ? audioMatch[1] : undefined;
-    
-    // Extract quality text (before any <span> tag)
-    const textMatch = /^\s*(.*?)\s*(?:<span|$)/.exec(innerText);
-    const rawQuality = textMatch ? textMatch[1].trim() : innerText.trim();
-    const quality = decodeHtmlEntities(rawQuality);
-    
-    count++;
-    console.log(`[parseResolutionMenu] Found button ${count}: quality="${quality}" (raw: "${rawQuality}"), url="${dataSrc}", audio="${audio}"`);
+    const fullButton = match[0]
+    const innerText = match[1]
+    const srcMatch = /data-src="([^"]*)"/.exec(fullButton)
+    if (!srcMatch) continue
 
-    buttons.push({
-      url: dataSrc,
-      quality: quality,
-      audio: audio,
-    });
+    const audioMatch = /data-audio="([^"]*)"/.exec(fullButton)
+    if (audioMatch?.[1]?.toLowerCase() === "eng") continue
+
+    const textMatch = /^\s*(.*?)\s*(?:<span|$)/.exec(innerText)
+    const quality = decodeHtmlEntities(textMatch ? textMatch[1].trim() : innerText.trim())
+
+    buttons.push({ url: srcMatch[1], quality })
   }
 
-  console.log('[parseResolutionMenu] DONE - Found', buttons.length, 'buttons');
-  return buttons;
+  return buttons
 }
 
-export async function getAnimepaheSources(episodeId: string): Promise<QualityMap> {
-  console.log('[getAnimepaheSources] Fetching episode page:', episodeId);
-  const baseUrl = getBaseUrl()
-  
-  const response = await fetch(
-    `${baseUrl}/play/${episodeId}`,
-    { headers: getHeaders(episodeId.split('/')[0]) }
-  );
+async function scrapePlayPageSources(episodeId: string): Promise<QualityMap> {
+  const baseUrl = getDirectBaseUrl()
+  const animeSession = episodeId.split("/")[0]
+
+  const response = await fetch(`${baseUrl}/play/${episodeId}`, {
+    headers: getDirectPlayHeaders(animeSession),
+  })
 
   if (!response.ok) {
-    console.error('[getAnimepaheSources] HTTP error:', response.status);
-    throw new Error(`HTTP error! status: ${response.status}`);
+    throw new Error(`HTTP error! status: ${response.status}`)
   }
 
-  console.log('[getAnimepaheSources] Parsing resolution menu');
-  const html = await response.text();
-  const buttons = parseResolutionMenu(html);
-  console.log('[getAnimepaheSources] Found', buttons.length, 'quality options');
+  const html = await response.text()
+  const buttons = parseResolutionMenu(html)
+  const dict: QualityMap = {}
 
-  const dict: QualityMap = {};
-  
-  for (let i = 0; i < buttons.length; i++) {
-    const button = buttons[i];
-    console.log(`[getAnimepaheSources] Processing quality ${i+1}/${buttons.length}: ${button.quality}`);
-    
+  for (const button of buttons) {
     try {
-      const url = await extractKwikUrl(button.url);
-      const parts = button.quality.split(" · ");
-      const tag = "-" + (parts[1] ?? parts[0]).trim();
-      
-      // Skip "eng" suffix
-      if (!tag.endsWith("eng")) {
-        dict[tag] = url;
-        console.log(`[getAnimepaheSources] Added ${tag}`);
-      }
+      const url = await extractKwikUrl(button.url)
+      const parts = button.quality.split(" · ")
+      const tag = "-" + (parts[1] ?? parts[0]).trim()
+      if (!tag.endsWith("eng")) dict[tag] = url
     } catch (err) {
-      console.error(`[getAnimepaheSources] Failed to extract quality ${button.quality}:`, err);
-      // Continue with other qualities instead of failing completely
+      console.error(`[getAnimepaheSources] Failed quality ${button.quality}:`, err)
     }
   }
 
-  console.log('[getAnimepaheSources] Final dict:', dict);
-  return dict;
+  return dict
+}
+
+export async function getAnimepaheSources(episodeId: string): Promise<QualityMap> {
+  console.log("[getAnimepaheSources] Fetching:", episodeId)
+
+  if (useApiMode()) {
+    return paheFetchStreamingSourcesFromApi(episodeId)
+  }
+
+  return scrapePlayPageSources(episodeId)
 }
 
 // ---- Quality Selection ----
