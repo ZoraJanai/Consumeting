@@ -6,9 +6,7 @@ import {
   hasWebViewSession,
   isChallengePage,
   isLikelyJsonApi,
-  shouldShowVerificationSheet,
-  shouldTrySilentWebView,
-  trySilentWebViewFetch,
+  needsVerificationSheet,
   webViewFetch,
 } from "./cloudflareBypass"
 
@@ -102,8 +100,14 @@ async function directFetch(
     if (!isChallengePage(body)) return body
   }
 
-  if (shouldShowVerificationSheet(response.status, body, expectJson) && !retried) {
-    const bypassed = await handleBlockedResponse(getBaseUrl(), response.status, body, retried)
+  if (!retried && needsVerificationSheet(response.status, body, expectJson)) {
+    const bypassed = await handleBlockedResponse(
+      getBaseUrl(),
+      response.status,
+      body,
+      expectJson,
+      retried
+    )
     if (bypassed) {
       if (hasWebViewSession()) return webViewFetch(requestUrl, accept)
 
@@ -116,12 +120,6 @@ async function directFetch(
       return directFetch(requestUrl, nextHeaders, true, expectJson)
     }
     throw new Error("Animepahe verification failed or was cancelled")
-  }
-
-  if (!retried && shouldTrySilentWebView(response.status, body, expectJson)) {
-    console.log("[animepaheClient] Trying silent WebView session (no sheet)")
-    const silentBody = await trySilentWebViewFetch(requestUrl, accept)
-    if (silentBody != null) return silentBody
   }
 
   if (!response.ok) {

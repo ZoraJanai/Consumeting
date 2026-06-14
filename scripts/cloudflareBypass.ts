@@ -79,20 +79,12 @@ export function isBlockedResponse(status: number, body: string): boolean {
   return isChallengePage(body)
 }
 
-export function shouldShowVerificationSheet(
+export function needsVerificationSheet(
   status: number,
   body: string,
   expectJson: boolean
 ): boolean {
-  return isChallengePage(body)
-}
-
-export function shouldTrySilentWebView(
-  status: number,
-  body: string,
-  expectJson: boolean
-): boolean {
-  if (isChallengePage(body)) return false
+  if (isChallengePage(body)) return true
   if (status === 403 || status === 503) return true
   if (expectJson && !isLikelyJsonApi(body)) return true
   return false
@@ -285,66 +277,6 @@ async function getOrCreateSessionController(baseUrl: string): Promise<any> {
   return sessionController
 }
 
-export async function trySilentWebViewFetch(
-  requestUrl: string,
-  accept?: string
-): Promise<string | null> {
-  const baseUrl = loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, "https://animepahe.pw").replace(/\/$/, "")
-  const acceptHeader = accept || JSON_ACCEPT
-
-  if (sessionController) {
-    try {
-      const body = await webViewFetchOnController(sessionController, requestUrl, acceptHeader)
-      if (!isChallengePage(body)) return body
-    } catch (err) {
-      console.warn("[cloudflareBypass] Silent fetch on existing session failed:", err)
-    }
-    return null
-  }
-
-  const controller = new WebViewController()
-  try {
-    await preloadStoredCookies(controller, baseUrl)
-    await controller.loadURL(baseUrl)
-    if (controller.waitForLoad) await controller.waitForLoad()
-
-    if (controller.getHTML) {
-      const html = await controller.getHTML()
-      if (isChallengePage(html)) {
-        console.log("[cloudflareBypass] Challenge page detected, opening verification sheet")
-        await controller.present({
-          fullscreen: true,
-          navigationTitle: "Complete verification",
-        })
-        const verified = await verifyWebViewSession(controller, baseUrl)
-        if (verified) {
-          sessionController = controller
-          markWebViewSessionActive()
-          return webViewFetchOnController(controller, requestUrl, acceptHeader)
-        }
-        controller.dispose()
-        return null
-      }
-    }
-
-    const body = await webViewFetchOnController(controller, requestUrl, acceptHeader)
-    if (isChallengePage(body)) return null
-
-    sessionController = controller
-    markWebViewSessionActive()
-    console.log("[cloudflareBypass] Silent WebView session established")
-    return body
-  } catch (err) {
-    console.warn("[cloudflareBypass] Silent WebView bootstrap failed:", err)
-    try {
-      controller.dispose()
-    } catch {
-      /* ignore */
-    }
-    return null
-  }
-}
-
 export async function webViewFetch(requestUrl: string, accept?: string): Promise<string> {
   const baseUrl = loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, "https://animepahe.pw").replace(/\/$/, "")
   const controller = await getOrCreateSessionController(baseUrl)
@@ -434,10 +366,11 @@ export async function handleBlockedResponse(
   baseUrl: string,
   status: number,
   body: string,
+  expectJson: boolean,
   alreadyRetried: boolean
 ): Promise<boolean> {
-  if (alreadyRetried || !isChallengePage(body)) return false
+  if (alreadyRetried || !needsVerificationSheet(status, body, expectJson)) return false
 
-  console.log("[cloudflareBypass] Challenge page detected, opening verification sheet")
+  console.log("[cloudflareBypass] Opening verification sheet")
   return presentCloudflareBypass(baseUrl)
 }
