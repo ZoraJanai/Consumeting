@@ -1,5 +1,5 @@
 import { fetch } from "scripting"
-import { loadSetting, STORAGE_KEYS } from "../Pages/Settings"
+import { loadSetting, STORAGE_KEYS } from "./storage"
 import {
   getStoredCookieHeader,
   handleBlockedResponse,

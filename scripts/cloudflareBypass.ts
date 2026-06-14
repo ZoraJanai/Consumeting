@@ -1,4 +1,4 @@
-import { loadSetting, saveSetting, STORAGE_KEYS } from "../Pages/Settings"
+import { loadSetting, saveSetting, STORAGE_KEYS } from "./storage"
 
 type WebCookie = {
   name: string

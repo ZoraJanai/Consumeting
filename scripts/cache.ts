@@ -1,4 +1,4 @@
-import { loadSetting } from "../Pages/Settings"
+import { loadSetting } from "./storage"
 import { loadData, saveData } from "./data"
 
 // Unified data structure

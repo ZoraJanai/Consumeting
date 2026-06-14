@@ -1,6 +1,6 @@
 // Episode handling — direct animepahe scraping (animepahe-api repo style)
 import { fetch } from "scripting"
-import { loadSetting, saveSetting, STORAGE_KEYS } from "../Pages/Settings"
+import { loadSetting, saveSetting, STORAGE_KEYS } from "./storage"
 import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
