@@ -10,6 +10,7 @@ import { HomePage } from "./Pages/Home"
 import { OverlayHost } from "./Pages/Loading"
 import { STORAGE_KEYS, loadSetting, saveSetting } from "./Pages/Settings"
 import { copyFileFromDocumentsIfExists, loadData, saveData } from "./scripts/data"
+import { bootstrapAnimepaheSession } from "./scripts/animepaheSession"
 
 
 type TabChildProps = {
@@ -135,6 +136,7 @@ export async function bootstrap() {
 
 export async function run() {
   await bootstrap()
+  await bootstrapAnimepaheSession()
   await Navigation.present({
     element: (
       <ZStack>

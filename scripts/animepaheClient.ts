@@ -1,14 +1,16 @@
 import { fetch } from "scripting"
 import { loadSetting, STORAGE_KEYS } from "./storage"
 import {
+  apiHeaders,
+  bootstrapAnimepaheSession,
+  ensureAnimepaheSession,
+  getBaseUrl,
   getStoredCookieHeader,
-  handleBlockedResponse,
-  hasWebViewSession,
   isChallengePage,
   isLikelyJsonApi,
-  needsVerificationSheet,
-  webViewFetch,
-} from "./cloudflareBypass"
+  playPageHeaders,
+  saveCookieHeader,
+} from "./animepaheSession"
 
 type PaginationInfo = { lastPage?: number }
 type StreamSource = {
@@ -19,15 +21,6 @@ type StreamSource = {
   fanSub?: string
 }
 
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-const JSON_ACCEPT = "application/json, text/javascript, */*; q=0.01"
-const HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-
-function getBaseUrl(): string {
-  return loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, "https://animepahe.pw").replace(/\/$/, "")
-}
-
 function getApiBaseUrl(): string {
   return loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "").replace(/\/$/, "")
 }
@@ -36,90 +29,44 @@ function useApiMode(): boolean {
   return getApiBaseUrl().length > 0
 }
 
-function directHeaders(sessionId?: string): Record<string, string> {
-  const baseUrl = getBaseUrl()
-  const headers: Record<string, string> = {
-    Accept: JSON_ACCEPT,
-    "Accept-Language": "en-US,en;q=0.9",
-    DNT: "1",
-    "sec-ch-ua": '"Not A(Brand";v="99", "Microsoft Edge";v="121", "Chromium";v="121"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-    "x-requested-with": "XMLHttpRequest",
-    Referer: sessionId ? baseUrl + "/anime/" + sessionId : baseUrl,
-    "User-Agent": USER_AGENT,
-  }
-
-  const cookies = getStoredCookieHeader()
-  if (cookies) headers.Cookie = cookies
-
-  return headers
-}
-
-function playPageHeaders(sessionId: string): Record<string, string> {
-  const baseUrl = getBaseUrl()
-  const headers: Record<string, string> = {
-    Accept: HTML_ACCEPT,
-    "Accept-Language": "en-US,en;q=0.9",
-    Referer: baseUrl + "/anime/" + sessionId,
-    "User-Agent": USER_AGENT,
-  }
-
-  const cookies = getStoredCookieHeader()
-  if (cookies) headers.Cookie = cookies
-
-  return headers
-}
-
 async function directFetch(
   requestUrl: string,
   headers: Record<string, string>,
   retried = false,
   expectJson = true
 ): Promise<string> {
-  const accept = headers.Accept || JSON_ACCEPT
-
-  if (hasWebViewSession()) {
-    try {
-      const body = await webViewFetch(requestUrl, accept)
-      if (!isChallengePage(body)) return body
-      console.warn("[animepaheClient] WebView session hit challenge page")
-    } catch (err) {
-      console.warn("[animepaheClient] WebView fetch failed:", err)
-    }
-  }
+  await ensureAnimepaheSession()
 
   const response = await fetch(requestUrl, { headers })
   const body = await response.text()
+
+  if (response.cookies && response.cookies.length) {
+    const parts: string[] = []
+    for (let i = 0; i < response.cookies.length; i++) {
+      parts.push(response.cookies[i].name + "=" + response.cookies[i].value)
+    }
+    const incoming = parts.join("; ")
+    if (incoming) {
+      const current = getStoredCookieHeader()
+      saveCookieHeader(current ? current + "; " + incoming : incoming)
+    }
+  }
 
   if (response.ok) {
     if (!expectJson || isLikelyJsonApi(body)) return body
     if (!isChallengePage(body)) return body
   }
 
-  if (!retried && needsVerificationSheet(response.status, body, expectJson)) {
-    const bypassed = await handleBlockedResponse(
-      getBaseUrl(),
-      response.status,
-      body,
-      expectJson,
-      retried
-    )
-    if (bypassed) {
-      if (hasWebViewSession()) return webViewFetch(requestUrl, accept)
-
-      const nextHeaders: Record<string, string> = {}
-      for (const key of Object.keys(headers)) {
-        nextHeaders[key] = headers[key]
-      }
-      const cookies = getStoredCookieHeader()
-      if (cookies) nextHeaders.Cookie = cookies
-      return directFetch(requestUrl, nextHeaders, true, expectJson)
+  if (!retried && (response.status === 403 || response.status === 503 || isChallengePage(body))) {
+    console.log("[animepaheClient] Session expired, re-bootstrapping")
+    await bootstrapAnimepaheSession()
+    const nextHeaders: Record<string, string> = {}
+    for (const key of Object.keys(headers)) {
+      nextHeaders[key] = headers[key]
     }
-    throw new Error("Animepahe verification failed or was cancelled")
+    const cookies = getStoredCookieHeader()
+    if (cookies) nextHeaders.Cookie = cookies
+    return directFetch(requestUrl, nextHeaders, true, expectJson)
   }
 
   if (!response.ok) {
@@ -131,7 +78,7 @@ async function directFetch(
 }
 
 async function directGet(requestUrl: string, sessionId?: string) {
-  const body = await directFetch(requestUrl, directHeaders(sessionId), false, true)
+  const body = await directFetch(requestUrl, apiHeaders(sessionId), false, true)
   return JSON.parse(body)
 }
 
@@ -139,12 +86,9 @@ async function apiGet<T>(path: string): Promise<T> {
   const base = getApiBaseUrl()
   const pathPart = path.startsWith("/") ? path : "/" + path
   const requestUrl = base + pathPart
-  console.log("[animepaheClient] API GET", requestUrl)
 
   const response = await fetch(requestUrl, { headers: { Accept: "application/json" } })
   if (!response.ok) {
-    const body = await response.text()
-    console.error("[animepaheClient] API HTTP", response.status, body.slice(0, 200))
     throw new Error("Animepahe API error " + response.status)
   }
   return response.json()
@@ -280,9 +224,10 @@ export async function paheFetchStreamingSourcesFromApi(
   const dict: Record<string, string> = {}
   const sources = data.sources ?? []
   for (let i = 0; i < sources.length; i++) {
-    const source = sources[i]
-    const tag = buildQualityTag(source)
-    if (tag && !dict[tag]) dict[tag] = source.url
+    const tag = buildQualityTag(sources[i])
+    if (tag && !dict[tag]) dict[tag] = sources[i].url
   }
   return dict
 }
+
+export { bootstrapAnimepaheSession, ensureAnimepaheSession }

@@ -6,8 +6,8 @@ import {
 import {
   clearStoredSession,
   hasStoredSession,
-  presentCloudflareBypass,
-} from "../scripts/cloudflareBypass"
+  refreshAnimepaheSession,
+} from "../scripts/animepaheSession"
 
 type VideoPlayerType = "nPlayer" | "Outplayer"
 type ProviderType = "Anilist" | "Animepahe"
@@ -175,7 +175,7 @@ export function SettingsPage() {
   }
 
   async function verifyAnimepahe() {
-    const ok = await presentCloudflareBypass(animepaheBaseUrl)
+    const ok = await refreshAnimepaheSession()
     setSessionActive(ok || hasStoredSession())
   }
 
