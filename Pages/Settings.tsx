@@ -175,8 +175,8 @@ export function SettingsPage() {
   }
 
   async function verifyAnimepahe() {
-    await presentCloudflareBypass(animepaheBaseUrl)
-    setSessionActive(hasStoredSession())
+    const ok = await presentCloudflareBypass(animepaheBaseUrl)
+    setSessionActive(ok || hasStoredSession())
   }
 
   function clearAnimepaheSession() {
