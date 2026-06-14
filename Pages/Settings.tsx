@@ -5,7 +5,9 @@ import {
 } from "scripting"
 import {
   clearStoredSession,
+  getStoredCookieHeader,
   hasStoredSession,
+  importCookieHeader,
   refreshAnimepaheSession,
 } from "../scripts/animepaheSession"
 
@@ -179,6 +181,19 @@ export function SettingsPage() {
     setSessionActive(ok || hasStoredSession())
   }
 
+  async function pasteAnimepaheCookies() {
+    const input = await Dialog.prompt({
+      title: "Animepahe cookies",
+      message:
+        "Paste the full Cookie header from browser DevTools (Application > Cookies, or Network request headers).",
+      value: getStoredCookieHeader(),
+    })
+    if (input == null || !input.trim()) return
+
+    const ok = await importCookieHeader(input)
+    setSessionActive(ok || hasStoredSession())
+  }
+
   function clearAnimepaheSession() {
     clearStoredSession()
     setSessionActive(false)
@@ -247,6 +262,10 @@ export function SettingsPage() {
           <Button
             title={sessionActive ? "Animepahe session: active" : "Animepahe session: not verified"}
             action={verifyAnimepahe}
+          />
+          <Button
+            title="Paste Animepahe cookies"
+            action={pasteAnimepaheCookies}
           />
           <Button
             title="Clear Animepahe session"

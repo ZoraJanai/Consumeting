@@ -8,6 +8,7 @@ import {
   getStoredCookieHeader,
   isChallengePage,
   isLikelyJsonApi,
+  mergeCookieHeaders,
   playPageHeaders,
   saveCookieHeader,
 } from "./animepaheSession"
@@ -47,8 +48,7 @@ async function directFetch(
     }
     const incoming = parts.join("; ")
     if (incoming) {
-      const current = getStoredCookieHeader()
-      saveCookieHeader(current ? current + "; " + incoming : incoming)
+      saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), incoming))
     }
   }
 

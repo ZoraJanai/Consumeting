@@ -17,9 +17,9 @@ declare const WebViewController: {
 }
 
 const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-const JSON_ACCEPT = "application/json, text/javascript, */*; q=0.01"
-const HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+
+const REQUIRED_COOKIE_NAMES = ["cf_clearance", "__ddg2_", "animepahe_session", "XSRF-TOKEN"]
 
 let bootstrapInFlight: Promise<boolean> | null = null
 let sessionReady = false
@@ -36,8 +36,26 @@ export function getStoredCookieHeader(): string {
   return loadSetting(STORAGE_KEYS.ANIMEPAHE_COOKIES, "").trim()
 }
 
+export function normalizeCookieHeader(raw: string): string {
+  let header = raw.trim()
+  if (/^cookie\s*:/i.test(header)) {
+    header = header.replace(/^cookie\s*:/i, "").trim()
+  }
+  return header
+}
+
 export function saveCookieHeader(header: string) {
-  saveSetting(STORAGE_KEYS.ANIMEPAHE_COOKIES, header.trim())
+  saveSetting(STORAGE_KEYS.ANIMEPAHE_COOKIES, normalizeCookieHeader(header))
+}
+
+export function missingSessionCookies(header: string): string[] {
+  const normalized = normalizeCookieHeader(header).toLowerCase()
+  const missing: string[] = []
+  for (let i = 0; i < REQUIRED_COOKIE_NAMES.length; i++) {
+    const name = REQUIRED_COOKIE_NAMES[i].toLowerCase()
+    if (normalized.indexOf(name + "=") < 0) missing.push(REQUIRED_COOKIE_NAMES[i])
+  }
+  return missing
 }
 
 export function clearStoredSession() {
@@ -87,7 +105,7 @@ function cookiesToHeader(cookies: WebCookie[]): string {
   return parts.join("; ")
 }
 
-function mergeCookieHeaders(existing: string, incoming: string): string {
+export function mergeCookieHeaders(existing: string, incoming: string): string {
   const map: Record<string, string> = {}
 
   function ingest(header: string) {
@@ -122,30 +140,14 @@ function originFromBaseUrl(baseUrl: string): string {
   return (match ? match[1] : baseUrl) + "/"
 }
 
-function homepageHeaders(baseUrl: string): Record<string, string> {
-  return {
-    Accept: HTML_ACCEPT,
-    "Accept-Language": "en-US,en;q=0.9",
-    "User-Agent": USER_AGENT,
-    Referer: baseUrl + "/",
-  }
-}
-
-export function apiHeaders(sessionId?: string): Record<string, string> {
+/** Headers matching a same-origin browser fetch to /api (see DevTools Network tab). */
+export function apiHeaders(_sessionId?: string): Record<string, string> {
   const baseUrl = getBaseUrl()
   const headers: Record<string, string> = {
-    Accept: JSON_ACCEPT,
-    "Accept-Language": "en-US,en;q=0.9",
-    DNT: "1",
-    "sec-ch-ua": '"Not A(Brand";v="99", "Microsoft Edge";v="121", "Chromium";v="121"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-    "x-requested-with": "XMLHttpRequest",
-    Referer: sessionId ? baseUrl + "/anime/" + sessionId : baseUrl + "/",
+    Referer: baseUrl + "/",
     "User-Agent": USER_AGENT,
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
   }
 
   const cookies = getStoredCookieHeader()
@@ -157,10 +159,10 @@ export function apiHeaders(sessionId?: string): Record<string, string> {
 export function playPageHeaders(sessionId: string): Record<string, string> {
   const baseUrl = getBaseUrl()
   const headers: Record<string, string> = {
-    Accept: HTML_ACCEPT,
-    "Accept-Language": "en-US,en;q=0.9",
     Referer: baseUrl + "/anime/" + sessionId,
     "User-Agent": USER_AGENT,
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "navigate",
   }
 
   const cookies = getStoredCookieHeader()
@@ -250,43 +252,77 @@ async function captureCookiesFromDocument(controller: any): Promise<WebCookie[]>
   }
 }
 
+function filterCookiesForHost(cookies: WebCookie[], host: string): WebCookie[] {
+  const filtered: WebCookie[] = []
+  for (let i = 0; i < cookies.length; i++) {
+    const cookie = cookies[i]
+    const domain = (cookie.domain || "").replace(/^\./, "")
+    if (!domain || domain.indexOf(host) >= 0 || host.indexOf(domain) >= 0) {
+      filtered.push(cookie)
+    }
+  }
+  return filtered.length ? filtered : cookies
+}
+
 async function captureCookies(controller: any, baseUrl: string): Promise<WebCookie[]> {
   const origin = originFromBaseUrl(baseUrl)
   const host = hostFromBaseUrl(baseUrl)
   const urlsToTry = [baseUrl, origin, origin + "api/"]
-
-  if (controller.getCookies) {
-    for (let i = 0; i < urlsToTry.length; i++) {
-      try {
-        const matched = await controller.getCookies(urlsToTry[i])
-        if (matched && matched.length) return matched
-      } catch {
-        /* ignore */
-      }
-    }
-  }
+  const collected: WebCookie[] = []
 
   if (controller.getAllCookies) {
     try {
       const all = await controller.getAllCookies()
       if (all && all.length) {
-        const filtered: WebCookie[] = []
-        for (let i = 0; i < all.length; i++) {
-          const cookie = all[i]
-          const domain = (cookie.domain || "").replace(/^\./, "")
-          if (!domain || domain.indexOf(host) >= 0 || host.indexOf(domain) >= 0) {
-            filtered.push(cookie)
-          }
-        }
-        if (filtered.length) return filtered
-        return all
+        collected.push.apply(collected, filterCookiesForHost(all, host))
       }
     } catch {
       /* ignore */
     }
   }
 
-  return captureCookiesFromDocument(controller)
+  if (controller.getCookies) {
+    for (let i = 0; i < urlsToTry.length; i++) {
+      try {
+        const matched = await controller.getCookies(urlsToTry[i])
+        if (matched && matched.length) {
+          collected.push.apply(collected, matched)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  const documentCookies = await captureCookiesFromDocument(controller)
+  if (documentCookies.length) collected.push.apply(collected, documentCookies)
+
+  return collected
+}
+
+async function warmupApiInWebView(controller: any, baseUrl: string): Promise<boolean> {
+  if (!controller.evaluateJavaScript) return false
+
+  const probeUrl = baseUrl + "/api?m=search&q=a"
+  const referer = baseUrl + "/"
+  const script =
+    "return fetch('" +
+    probeUrl +
+    "', { headers: { Referer: '" +
+    referer +
+    "', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors' } })" +
+    ".then(function(r) { return r.text().then(function(t) { return r.status + '|' + t.slice(0, 120); }); })"
+
+  try {
+    const result = await controller.evaluateJavaScript(script)
+    if (!result || typeof result !== "string") return false
+    const parts = result.split("|")
+    const status = parseInt(parts[0], 10)
+    const body = parts.slice(1).join("|")
+    return status === 200 && isLikelyJsonApi(body) && !isChallengePage(body)
+  } catch {
+    return false
+  }
 }
 
 async function probeApi(baseUrl: string): Promise<boolean> {
@@ -299,18 +335,6 @@ async function probeApi(baseUrl: string): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-async function fetchMainPage(baseUrl: string): Promise<{ ok: boolean; status: number; body: string }> {
-  const response = await fetch(baseUrl + "/", { headers: homepageHeaders(baseUrl) })
-  const body = await response.text()
-  saveResponseCookies(response)
-  return { ok: response.ok, status: response.status, body: body }
-}
-
-function needsVerificationPage(status: number, body: string): boolean {
-  if (status === 403 || status === 503) return true
-  return isChallengePage(body)
 }
 
 async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
@@ -326,15 +350,22 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
       navigationTitle: "Complete verification",
     })
 
+    const warmed = await warmupApiInWebView(controller, baseUrl)
+    console.log("[animepaheSession] WebView API warmup:", warmed ? "ok" : "failed")
+
     const cookies = await captureCookies(controller, baseUrl)
     const header = cookiesToHeader(cookies)
     if (header) {
       saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), header))
       console.log("[animepaheSession] Saved cookies from WebView:", cookies.length)
+      const missing = missingSessionCookies(getStoredCookieHeader())
+      if (missing.length) {
+        console.log("[animepaheSession] Missing cookies:", missing.join(", "))
+      }
     }
 
     controller.dispose()
-    return await probeApi(baseUrl)
+    return warmed || (await probeApi(baseUrl))
   } catch (err) {
     try {
       controller.dispose()
@@ -356,27 +387,20 @@ async function runBootstrap(): Promise<boolean> {
   console.log("[animepaheSession] Bootstrapping session for", baseUrl)
 
   if (getStoredCookieHeader()) {
+    const missing = missingSessionCookies(getStoredCookieHeader())
+    if (missing.length) {
+      console.log("[animepaheSession] Stored cookies missing:", missing.join(", "))
+    }
+
     const cachedOk = await probeApi(baseUrl)
     if (cachedOk) {
       sessionReady = true
       console.log("[animepaheSession] Reused stored cookies")
       return true
     }
-    clearStoredSession()
+    console.log("[animepaheSession] Stored cookies rejected by API probe")
   }
 
-  const main = await fetchMainPage(baseUrl)
-  if (main.ok && !needsVerificationPage(main.status, main.body)) {
-    const ok = await probeApi(baseUrl)
-    if (ok) {
-      sessionReady = true
-      console.log("[animepaheSession] Main page fetch established session")
-      return true
-    }
-    console.log("[animepaheSession] Main page loaded but API probe failed")
-  } else {
-    console.log("[animepaheSession] Main page blocked:", main.status)
-  }
   console.log("[animepaheSession] Opening verification sheet")
   const verified = await captureSessionFromWebView(baseUrl)
   sessionReady = verified
@@ -400,6 +424,24 @@ export async function ensureAnimepaheSession(): Promise<boolean> {
   if (useApiMode()) return true
   if (sessionReady && hasStoredSession()) return true
   return bootstrapAnimepaheSession()
+}
+
+/** Save cookies pasted from browser DevTools and validate with a probe. */
+export async function importCookieHeader(raw: string): Promise<boolean> {
+  const header = normalizeCookieHeader(raw)
+  if (!header) return false
+
+  saveCookieHeader(header)
+  sessionReady = false
+
+  const missing = missingSessionCookies(header)
+  if (missing.length) {
+    console.log("[animepaheSession] Imported cookies missing:", missing.join(", "))
+  }
+
+  const ok = await probeApi(getBaseUrl())
+  sessionReady = ok
+  return ok
 }
 
 /** Manual re-verify from Settings. */
