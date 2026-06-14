@@ -8,9 +8,11 @@ import {
   getStoredCookieHeader,
   isChallengePage,
   isLikelyJsonApi,
+  isWebViewSessionActive,
   mergeCookieHeaders,
   playPageHeaders,
   saveCookieHeader,
+  webViewFetch,
 } from "./animepaheSession"
 
 type PaginationInfo = { lastPage?: number }
@@ -37,6 +39,31 @@ async function directFetch(
   expectJson = true
 ): Promise<string> {
   await ensureAnimepaheSession()
+
+  if (isWebViewSessionActive()) {
+    const referer = headers.Referer || getBaseUrl() + "/"
+    const fetchMode = expectJson ? "cors" : "navigate"
+    const result = await webViewFetch(requestUrl, referer, fetchMode)
+    const body = result.body
+
+    if (result.status >= 200 && result.status < 300) {
+      if (!expectJson || isLikelyJsonApi(body)) return body
+      if (!isChallengePage(body)) return body
+    }
+
+    if (!retried && (result.status === 403 || result.status === 503 || isChallengePage(body))) {
+      console.log("[animepaheClient] WebView session expired, re-bootstrapping")
+      await bootstrapAnimepaheSession()
+      return directFetch(requestUrl, headers, true, expectJson)
+    }
+
+    if (result.status < 200 || result.status >= 300) {
+      console.error("[animepaheClient] WebView HTTP", result.status, body.slice(0, 200))
+      throw new Error("Animepahe error " + result.status)
+    }
+
+    return body
+  }
 
   const response = await fetch(requestUrl, { headers })
   const body = await response.text()
