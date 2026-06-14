@@ -11,17 +11,6 @@ type WebCookie = {
   expiresDate?: Date | null
 }
 
-type WebViewControllerInstance = {
-  loadURL(url: string): Promise<boolean>
-  present(options?: { fullscreen?: boolean; navigationTitle?: string }): Promise<void>
-  getCookies?(url: string): Promise<WebCookie[]>
-  getAllCookies?(): Promise<WebCookie[]>
-  setCookie?(cookie: WebCookie): Promise<boolean>
-  dispose(): void
-}
-
-declare const WebViewController: new () => WebViewControllerInstance
-
 let bypassInFlight: Promise<string | null> | null = null
 
 export function getStoredCookieHeader(): string {
@@ -54,38 +43,48 @@ export function isBlockedResponse(status: number, body: string): boolean {
     return true
   }
 
-  // JSON endpoints returning an HTML challenge page
-  if (status === 200 && body.trimStart().startsWith("<")) return true
+  const trimmed = body.replace(/^\s+/, "")
+  if (status === 200 && trimmed.startsWith("<")) return true
 
   return false
 }
 
 function cookiesToHeader(cookies: WebCookie[]): string {
-  const seen = new Set<string>()
+  const seen: Record<string, boolean> = {}
   const parts: string[] = []
 
-  for (const cookie of cookies) {
-    if (!cookie.name || seen.has(cookie.name)) continue
-    seen.add(cookie.name)
-    parts.push(`${cookie.name}=${cookie.value}`)
+  for (let i = 0; i < cookies.length; i++) {
+    const cookie = cookies[i]
+    if (!cookie.name || seen[cookie.name]) continue
+    seen[cookie.name] = true
+    parts.push(cookie.name + "=" + cookie.value)
   }
 
   return parts.join("; ")
 }
 
 function hostFromBaseUrl(baseUrl: string): string {
-  return new URL(baseUrl).hostname.replace(/^www\./, "")
+  const match = baseUrl.match(/^https?:\/\/([^/?#]+)/i)
+  const host = match ? match[1] : baseUrl
+  return host.replace(/^www\./, "")
 }
 
-async function preloadStoredCookies(controller: WebViewControllerInstance, baseUrl: string) {
+function originFromBaseUrl(baseUrl: string): string {
+  const match = baseUrl.match(/^(https?:\/\/[^/?#]+)/i)
+  return (match ? match[1] : baseUrl) + "/"
+}
+
+async function preloadStoredCookies(controller: any, baseUrl: string) {
   if (!controller.setCookie) return
 
   const header = getStoredCookieHeader()
   if (!header) return
 
   const host = hostFromBaseUrl(baseUrl)
-  for (const part of header.split(";")) {
-    const trimmed = part.trim()
+  const parts = header.split(";")
+
+  for (let i = 0; i < parts.length; i++) {
+    const trimmed = parts[i].trim()
     if (!trimmed) continue
 
     const eq = trimmed.indexOf("=")
@@ -97,9 +96,9 @@ async function preloadStoredCookies(controller: WebViewControllerInstance, baseU
 
     try {
       await controller.setCookie({
-        name,
-        value,
-        domain: `.${host}`,
+        name: name,
+        value: value,
+        domain: "." + host,
         path: "/",
         isSecure: true,
         isHTTPOnly: false,
@@ -111,18 +110,26 @@ async function preloadStoredCookies(controller: WebViewControllerInstance, baseU
   }
 }
 
-async function captureCookies(controller: WebViewControllerInstance, baseUrl: string): Promise<WebCookie[]> {
-  const origin = new URL(baseUrl).origin + "/"
+async function captureCookies(controller: any, baseUrl: string): Promise<WebCookie[]> {
+  const origin = originFromBaseUrl(baseUrl)
   const host = hostFromBaseUrl(baseUrl)
 
   if (controller.getCookies) {
     const matched = await controller.getCookies(origin)
-    if (matched.length) return matched
+    if (matched && matched.length) return matched
   }
 
   if (controller.getAllCookies) {
     const all = await controller.getAllCookies()
-    return all.filter(cookie => cookie.domain.replace(/^\./, "").includes(host))
+    const filtered: WebCookie[] = []
+    for (let i = 0; i < all.length; i++) {
+      const cookie = all[i]
+      const domain = cookie.domain.replace(/^\./, "")
+      if (domain.indexOf(host) >= 0 || host.indexOf(domain) >= 0) {
+        filtered.push(cookie)
+      }
+    }
+    return filtered
   }
 
   return []
@@ -156,21 +163,16 @@ async function runBypassSheet(baseUrl: string): Promise<string | null> {
   }
 }
 
-/** Show the verification browser sheet and save cookies when the user closes it. */
 export async function presentCloudflareBypass(baseUrl: string): Promise<string | null> {
   if (bypassInFlight) return bypassInFlight
 
-  bypassInFlight = runBypassSheet(baseUrl).finally(() => {
+  bypassInFlight = runBypassSheet(baseUrl).finally(function () {
     bypassInFlight = null
   })
 
   return bypassInFlight
 }
 
-/**
- * If the response looks blocked, show the bypass sheet once and return true when
- * new cookies were saved (caller should retry).
- */
 export async function handleBlockedResponse(
   baseUrl: string,
   status: number,
@@ -182,4 +184,8 @@ export async function handleBlockedResponse(
   console.log("[cloudflareBypass] Blocked response detected, opening verification sheet")
   const header = await presentCloudflareBypass(baseUrl)
   return header != null && header.length > 0
+}
+
+declare const WebViewController: {
+  new (): any
 }

@@ -68,17 +68,20 @@ function playPageHeaders(sessionId: string): Record<string, string> {
   return headers
 }
 
-async function directFetch(url: string, headers: Record<string, string>, retried = false): Promise<string> {
-  const response = await fetch(url, { headers })
+async function directFetch(requestUrl: string, headers: Record<string, string>, retried = false): Promise<string> {
+  const response = await fetch(requestUrl, { headers })
   const body = await response.text()
 
   if (isBlockedResponse(response.status, body)) {
     const bypassed = await handleBlockedResponse(getBaseUrl(), response.status, body, retried)
     if (bypassed) {
-      const nextHeaders = { ...headers }
+      const nextHeaders: Record<string, string> = {}
+      for (const key of Object.keys(headers)) {
+        nextHeaders[key] = headers[key]
+      }
       const cookies = getStoredCookieHeader()
       if (cookies) nextHeaders.Cookie = cookies
-      return directFetch(url, nextHeaders, true)
+      return directFetch(requestUrl, nextHeaders, true)
     }
     throw new Error("Animepahe verification failed or was cancelled")
   }
@@ -91,17 +94,18 @@ async function directFetch(url: string, headers: Record<string, string>, retried
   return body
 }
 
-async function directGet(url: string, sessionId?: string) {
-  const body = await directFetch(url, directHeaders(sessionId))
+async function directGet(requestUrl: string, sessionId?: string) {
+  const body = await directFetch(requestUrl, directHeaders(sessionId))
   return JSON.parse(body)
 }
 
 async function apiGet<T>(path: string): Promise<T> {
   const base = getApiBaseUrl()
-  const url = `${base}${path.startsWith("/") ? path : `/${path}`}`
-  console.log("[animepaheClient] API GET", url)
+  const pathPart = path.startsWith("/") ? path : "/" + path
+  const requestUrl = base + pathPart
+  console.log("[animepaheClient] API GET", requestUrl)
 
-  const response = await fetch(url, { headers: { Accept: "application/json" } })
+  const response = await fetch(requestUrl, { headers: { Accept: "application/json" } })
   if (!response.ok) {
     const body = await response.text()
     console.error("[animepaheClient] API HTTP", response.status, body.slice(0, 200))
@@ -121,20 +125,26 @@ export function buildQualityTag(source: StreamSource): string | null {
   return `-${resTag}`
 }
 
+function cleanSearchQuery(query: string): string {
+  return query.replace(/[^a-zA-Z0-9\s\u0080-\uFFFF]/g, "").trim()
+}
+
 export async function paheSearch(
   query: string
 ): Promise<{ title: string; session: string; poster: string }[]> {
-  const cleanQuery = query.replaceAll(/[^\p{L}\p{N}\s]/gu, "")
+  const cleanQuery = cleanSearchQuery(query)
+  const encodedQuery = encodeURIComponent(cleanQuery)
 
   if (useApiMode()) {
     const data = await apiGet<{ data: { title: string; session: string; poster: string }[] }>(
-      `/api/search?q=${encodeURIComponent(cleanQuery)}`
+      "/api/search?q=" + encodedQuery
     )
     return data.data ?? []
   }
 
   const baseUrl = getBaseUrl()
-  const data = await directGet(`${baseUrl}/api?m=search&q=${encodeURIComponent(cleanQuery)}`)
+  const searchUrl = baseUrl + "/api?m=search&q=" + encodedQuery
+  const data = await directGet(searchUrl)
   return (data.data ?? []).map((item: any) => ({
     title: item.title,
     session: item.session,
@@ -162,10 +172,13 @@ export async function paheFetchEpisodesPage(
   }
 
   const baseUrl = getBaseUrl()
-  const data = await directGet(
-    `${baseUrl}/api?m=release&id=${encodeURIComponent(session)}&sort=episode_asc&page=${page}`,
-    session
-  )
+  const releasesUrl =
+    baseUrl +
+    "/api?m=release&id=" +
+    encodeURIComponent(session) +
+    "&sort=episode_asc&page=" +
+    String(page)
+  const data = await directGet(releasesUrl, session)
 
   return {
     episodes: (data.data ?? []).map((item: any) => ({
@@ -194,7 +207,8 @@ export async function paheFetchAllEpisodes(session: string) {
 export async function directFetchPlayPage(episodeId: string): Promise<string> {
   const baseUrl = getBaseUrl()
   const animeSession = episodeId.split("/")[0]
-  return directFetch(`${baseUrl}/play/${episodeId}`, playPageHeaders(animeSession))
+  const playUrl = baseUrl + "/play/" + episodeId
+  return directFetch(playUrl, playPageHeaders(animeSession))
 }
 
 export function getDirectBaseUrl(): string {
