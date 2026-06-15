@@ -28,6 +28,11 @@ declare const UIImage: {
   fromBase64String(base64String: string): any | null
 }
 
+declare const Data: {
+  fromUint8Array(bytes: Uint8Array): any | null
+  fromBase64String(base64: string): any | null
+}
+
 declare const FileManager: {
   temporaryDirectory: string
   createDirectory(path: string, recursive?: boolean): Promise<void>
@@ -101,6 +106,7 @@ type ImageFetchResult = {
   ok: boolean
   status: number
   mimeType?: string
+  data?: any
   bytes?: Uint8Array
   body?: string
   challenge?: boolean
@@ -378,43 +384,6 @@ function hashUrl(url: string): string {
   return String(hash >>> 0)
 }
 
-function dataToUIImage(data: any): any | null {
-  if (!hasUIImage()) {
-    logPaheImage("decode", "UIImage global not available")
-    return null
-  }
-  if (!data) {
-    logPaheImage("decode", "no data object")
-    return null
-  }
-
-  try {
-    const img = UIImage.fromData(data)
-    if (img) {
-      logPaheImage("decode", "UIImage.fromData ok", imageSizeLabel(img))
-      return img
-    }
-    logPaheImage("decode", "UIImage.fromData returned null")
-  } catch (err) {
-    logPaheImage("decode", "UIImage.fromData threw", String(err))
-  }
-
-  try {
-    if (typeof data.toBase64String === "function") {
-      const img = UIImage.fromBase64String(data.toBase64String())
-      if (img) {
-        logPaheImage("decode", "UIImage.fromBase64String(data) ok", imageSizeLabel(img))
-        return img
-      }
-      logPaheImage("decode", "UIImage.fromBase64String(data) returned null")
-    }
-  } catch (err) {
-    logPaheImage("decode", "UIImage.fromBase64String(data) threw", String(err))
-  }
-
-  return null
-}
-
 function imageSizeLabel(img: any): string {
   if (!img) return ""
   const w = img.width ? String(img.width) : "?"
@@ -422,46 +391,106 @@ function imageSizeLabel(img: any): string {
   return w + "x" + h
 }
 
-async function saveBytesToCacheFile(
-  url: string,
-  bytes: Uint8Array,
-  mimeType?: string
-): Promise<string | null> {
+/** UIImage only decodes PNG/JPEG — animepahe posters are usually WebP. */
+function isUiImageFormat(url: string, mimeType?: string): boolean {
+  const lower = url.toLowerCase()
+  if (lower.indexOf(".webp") >= 0 || lower.indexOf(".gif") >= 0 || lower.indexOf(".avif") >= 0) {
+    return false
+  }
+  if (mimeType) {
+    const m = mimeType.toLowerCase()
+    if (m.indexOf("webp") >= 0 || m.indexOf("gif") >= 0 || m.indexOf("avif") >= 0) return false
+  }
+  return true
+}
+
+async function readImageBody(response: any): Promise<{ data: any | null; bytes: Uint8Array | null }> {
+  let data: any = null
+  let bytes: Uint8Array | null = null
+
+  try {
+    if (response.data) {
+      data = await response.data()
+      if (data && typeof data.toUint8Array === "function") {
+        bytes = data.toUint8Array()
+      }
+    }
+  } catch (err) {
+    logPaheImage("read", "response.data() failed", String(err))
+  }
+
+  if (!bytes) {
+    try {
+      if (response.bytes) {
+        bytes = await response.bytes()
+        if (bytes && !data && typeof Data !== "undefined" && Data.fromUint8Array) {
+          data = Data.fromUint8Array(bytes)
+        }
+      }
+    } catch (err) {
+      logPaheImage("read", "response.bytes() failed", String(err))
+    }
+  }
+
+  return { data: data, bytes: bytes }
+}
+
+async function saveImageDataToCache(url: string, data: any, bytes: Uint8Array | null, mimeType?: string): Promise<string | null> {
   try {
     const dir = FileManager.temporaryDirectory + "/pahe-images/"
     await FileManager.createDirectory(dir, true)
     const path = dir + hashUrl(url) + imageExtFromUrl(url, mimeType)
-    await FileManager.writeAsBytes(path, bytes)
-    logPaheImage("cache", "wrote file", path)
-    return path
+
+    if (data) {
+      await FileManager.writeAsData(path, data)
+      logPaheImage("cache", "writeAsData ok", path)
+      return path
+    }
+    if (bytes) {
+      await FileManager.writeAsBytes(path, bytes)
+      logPaheImage("cache", "writeAsBytes ok", path)
+      return path
+    }
   } catch (err) {
-    logPaheImage("cache", "writeAsBytes failed", String(err))
-    return null
+    logPaheImage("cache", "save failed", String(err))
   }
+  return null
 }
 
-async function decodeBytesToLoad(
+async function decodeImageDataToLoad(
   url: string,
-  bytes: Uint8Array,
+  data: any,
+  bytes: Uint8Array | null,
   mimeType?: string
 ): Promise<PaheImageLoad | null> {
-  const path = await saveBytesToCacheFile(url, bytes, mimeType)
+  const path = await saveImageDataToCache(url, data, bytes, mimeType)
   if (!path) return null
 
-  if (hasUIImage()) {
+  const useUi = isUiImageFormat(url, mimeType)
+  if (useUi && hasUIImage() && data) {
+    try {
+      const img = UIImage.fromData(data)
+      if (img) {
+        logPaheImage("decode", "UIImage.fromData ok", imageSizeLabel(img))
+        return { kind: "ui", image: img }
+      }
+      logPaheImage("decode", "UIImage.fromData returned null")
+    } catch (err) {
+      logPaheImage("decode", "UIImage.fromData threw", String(err))
+    }
+
     try {
       const fileImg = UIImage.fromFile(path)
       if (fileImg) {
         logPaheImage("decode", "UIImage.fromFile ok", imageSizeLabel(fileImg))
         return { kind: "ui", image: fileImg }
       }
-      logPaheImage("decode", "UIImage.fromFile returned null", path)
     } catch (err) {
       logPaheImage("decode", "UIImage.fromFile threw", String(err))
     }
   }
 
-  logPaheImage("decode", "using filePath fallback", path)
+  logPaheImage("decode", "Image filePath", path)
   return { kind: "file", path: path }
 }
 
@@ -530,7 +559,7 @@ export async function paheFetchImage(
   }
 }
 
-async function fetchImageBytes(
+async function fetchImageWithHeaders(
   url: string,
   headers: Record<string, string>,
   label: string
@@ -562,182 +591,144 @@ async function fetchImageBytes(
       }
     }
 
-    const bytes = await response.bytes()
+    const body = await readImageBody(response)
+    const bytes = body.bytes
+    if (!bytes || !bytes.length) {
+      logPaheImage("response", label + " empty body", "")
+      return { ok: false, status: status, mimeType: mimeType, body: "empty body" }
+    }
+
     logPaheImage("response", label + " bytes", bytesPreview(bytes))
 
     if (!bytesLookLikeImage(bytes)) {
       const preview = bytesToTextPreview(bytes)
       logPaheImage("response", label + " not image bytes", preview)
-      const challenge = bodyLooksLikeHtml(preview) || isChallengePage(preview)
       return {
         ok: false,
         status: status,
         mimeType: mimeType,
         body: preview,
-        challenge: challenge,
+        challenge: bodyLooksLikeHtml(preview) || isChallengePage(preview),
       }
     }
 
-    return { ok: true, status: status, mimeType: mimeType, bytes: bytes }
+    return { ok: true, status: status, mimeType: mimeType, data: body.data, bytes: bytes }
   } catch (err) {
     logPaheImage("fetch", label + " threw", String(err))
     return { ok: false, status: 0, body: String(err) }
   }
 }
 
-async function directFetchImageBytes(
+async function fetchImageViaWebView(
   url: string,
-  headers: Record<string, string>,
-  retried = false,
   animeSession?: string
 ): Promise<ImageFetchResult> {
-  await ensureAnimepaheSession()
-
-  if (isWebViewSessionActive()) {
-    const imgHeaders = paheImageHeaders(url, { animeSession: animeSession })
-    const referer = imgHeaders.Referer || paheAnimeReferer(animeSession)
-    logPaheImage("webview", "binary fetch", url.slice(0, 100))
-    logPaheImage("headers", "webview", headerSummary(imgHeaders))
-    try {
-      const result = await webViewFetchBinary(url, referer, "cors", imgHeaders)
-      logPaheImage(
-        "webview",
-        "status=" + String(result.status),
-        "binary=" + String(!!result.binary) + " bodyLen=" + String(result.body ? result.body.length : 0)
-      )
-      if (result.status < 200 || result.status >= 300 || !result.binary || !result.body) {
-        return {
-          ok: false,
-          status: result.status,
-          body: result.body ? result.body.slice(0, 120) : "",
-          challenge: result.body ? isChallengePage(result.body) : false,
-        }
+  const imgHeaders = paheImageHeaders(url, { animeSession: animeSession })
+  const referer = imgHeaders.Referer || paheAnimeReferer(animeSession)
+  logPaheImage("webview", "binary fetch", url.slice(0, 100))
+  logPaheImage("headers", "webview", headerSummary(imgHeaders))
+  try {
+    const result = await webViewFetchBinary(url, referer, "cors", imgHeaders)
+    logPaheImage(
+      "webview",
+      "status=" + String(result.status),
+      "binary=" + String(!!result.binary) + " bodyLen=" + String(result.body ? result.body.length : 0)
+    )
+    if (result.status < 200 || result.status >= 300 || !result.binary || !result.body) {
+      return {
+        ok: false,
+        status: result.status,
+        body: result.body ? result.body.slice(0, 120) : "",
+        challenge: result.body ? isChallengePage(result.body) : false,
       }
-      if (hasUIImage()) {
-        try {
-          const img = UIImage.fromBase64String(result.body)
-          if (img) {
-            imageCache[url] = img
-            logPaheImage("decode", "webview UIImage.fromBase64String ok", imageSizeLabel(img))
-            return { ok: true, status: result.status, mimeType: "image/webview" }
-          }
-          logPaheImage("decode", "webview UIImage.fromBase64String returned null")
-        } catch (err) {
-          logPaheImage("decode", "webview UIImage.fromBase64String threw", String(err))
-        }
-      }
-      const bytes = base64ToBytes(result.body)
-      if (bytes && bytesLookLikeImage(bytes)) {
-        logPaheImage("webview", "decoded base64 to bytes", bytesPreview(bytes))
-        return { ok: true, status: result.status, bytes: bytes }
-      }
-      logPaheImage("webview", "base64 did not look like image", bytes ? bytesPreview(bytes) : "no bytes")
-      return { ok: false, status: result.status, body: "base64 decode failed" }
-    } catch (err) {
-      logPaheImage("webview", "binary fetch threw", String(err))
-      return { ok: false, status: 0, body: String(err) }
     }
-  }
 
-  const result = await fetchImageBytes(url, headers, retried ? "retry" : "direct")
-
-  if (
-    !retried &&
-    !result.ok &&
-    (result.status === 403 || result.status === 503 || result.challenge)
-  ) {
-    logPaheImage("retry", "session refresh then retry", "status=" + String(result.status))
-    await bootstrapAnimepaheSession()
-    const nextHeaders: Record<string, string> = {}
-    for (const key of Object.keys(headers)) {
-      nextHeaders[key] = headers[key]
+    let data: any = null
+    if (typeof Data !== "undefined" && Data.fromBase64String) {
+      data = Data.fromBase64String(result.body)
     }
-    const cookies = getStoredCookieHeader()
-    if (cookies) nextHeaders.Cookie = cookies
-    return directFetchImageBytes(url, nextHeaders, true, animeSession)
-  }
+    const bytes = data && typeof data.toUint8Array === "function" ? data.toUint8Array() : base64ToBytes(result.body)
+    if (!bytes || !bytesLookLikeImage(bytes)) {
+      logPaheImage("webview", "invalid image data", bytes ? bytesPreview(bytes) : "no bytes")
+      return { ok: false, status: result.status, body: "invalid image data" }
+    }
 
-  return result
+    if (!data && bytes && typeof Data !== "undefined" && Data.fromUint8Array) {
+      data = Data.fromUint8Array(bytes)
+    }
+
+    return { ok: true, status: result.status, mimeType: "image/webview", data: data, bytes: bytes }
+  } catch (err) {
+    logPaheImage("webview", "binary fetch threw", String(err))
+    return { ok: false, status: 0, body: String(err) }
+  }
+}
+
+async function resultToImageLoad(url: string, result: ImageFetchResult): Promise<PaheImageLoad | null> {
+  if (!result.ok || !result.bytes) return null
+  return decodeImageDataToLoad(url, result.data, result.bytes, result.mimeType)
 }
 
 async function paheFetchImageInternal(
   url: string,
   opts?: { animeSession?: string }
 ): Promise<PaheImageLoad | null> {
-  const protectedUrl = isPaheProtectedUrl(url)
   const lower = url.toLowerCase()
-  const skip =
+  if (
     !url ||
+    url.indexOf("http") !== 0 ||
     lower.indexOf("anilist.co") >= 0 ||
     lower.indexOf("graphql.anilist") >= 0 ||
     lower.indexOf("ibb.co") >= 0
-
-  logPaheImage(
-    "session",
-    "protected=" + String(protectedUrl) +
-      " skip=" + String(skip) +
-      " webview=" + String(isWebViewSessionActive()) +
-      " cookieLen=" + String(getStoredCookieHeader().length) +
-      " uiImage=" + String(hasUIImage())
-  )
-
-  if (skip || url.indexOf("http") !== 0) {
-    logPaheImage("abort", "URL skipped for auth fetch", url)
+  ) {
+    logPaheImage("abort", "URL skipped", url)
     return null
   }
 
-  if (!protectedUrl) {
-    logPaheImage("warn", "unknown host — still trying with session headers", url.slice(0, 100))
+  await ensureAnimepaheSession()
+
+  const headers = paheImageHeaders(url, { animeSession: opts?.animeSession })
+  logPaheImage(
+    "session",
+    "webview=" + String(isWebViewSessionActive()) +
+      " cookieLen=" + String(getStoredCookieHeader().length),
+    headerSummary(headers)
+  )
+
+  let result = await fetchImageWithHeaders(url, headers, "imageHeaders")
+
+  if (
+    !result.ok &&
+    isWebViewSessionActive() &&
+    (result.status === 403 || result.status === 503 || result.challenge || result.status === 0)
+  ) {
+    logPaheImage("webview", "native failed, trying queue", "status=" + String(result.status))
+    result = await fetchImageViaWebView(url, opts?.animeSession)
   }
 
-  const referer = paheAnimeReferer(opts?.animeSession)
-  const headerSets: { label: string; headers: Record<string, string> }[] = [
-    { label: "imageHeaders", headers: paheImageHeaders(url, { animeSession: opts?.animeSession }) },
-    { label: "resourceHeaders", headers: paheResourceHeaders(referer) },
-    {
-      label: "paheHeaders",
-      headers: paheHeaders({ referer: referer, mode: "cors", requestUrl: url }),
-    },
-    { label: "apiHeaders", headers: apiHeaders() },
-    {
-      label: "refererOnly",
-      headers: { Referer: referer, "User-Agent": paheResourceHeaders(referer)["User-Agent"] },
-    },
-  ]
-
-  for (let i = 0; i < headerSets.length; i++) {
-    const attempt = headerSets[i]
-    logPaheImage("attempt", String(i + 1) + "/" + String(headerSets.length), attempt.label)
-
-    const result = await directFetchImageBytes(url, attempt.headers, false, opts?.animeSession)
-
-    if (!result.ok) {
-      logPaheImage("attempt", attempt.label + " failed", "status=" + String(result.status))
-      continue
-    }
-
-    if (isWebViewSessionActive() && imageCache[url]) {
-      return { kind: "ui", image: imageCache[url] }
-    }
-
-    if (result.bytes) {
-      const decoded = await decodeBytesToLoad(url, result.bytes, result.mimeType)
-      if (decoded) {
-        if (decoded.kind === "ui") imageCache[url] = decoded.image
-        if (decoded.kind === "file") imageFileCache[url] = decoded.path
-        return decoded
-      }
-      logPaheImage("attempt", attempt.label + " decode failed", bytesPreview(result.bytes))
-      continue
-    }
-
-    if (imageCache[url]) {
-      return { kind: "ui", image: imageCache[url] }
+  if (!result.ok && (result.status === 403 || result.status === 503 || result.challenge)) {
+    logPaheImage("retry", "refresh session", "status=" + String(result.status))
+    await bootstrapAnimepaheSession()
+    const retryHeaders = paheImageHeaders(url, { animeSession: opts?.animeSession })
+    result = await fetchImageWithHeaders(url, retryHeaders, "retry")
+    if (!result.ok && isWebViewSessionActive()) {
+      result = await fetchImageViaWebView(url, opts?.animeSession)
     }
   }
 
-  logPaheImage("fail", "all attempts exhausted", url.slice(0, 100))
-  return null
+  if (!result.ok) {
+    logPaheImage("fail", "fetch failed", "status=" + String(result.status) + " " + String(result.body || "").slice(0, 80))
+    return null
+  }
+
+  const load = await resultToImageLoad(url, result)
+  if (load) {
+    if (load.kind === "ui") imageCache[url] = load.image
+    if (load.kind === "file") imageFileCache[url] = load.path
+  } else {
+    logPaheImage("fail", "decode failed", url.slice(0, 80))
+  }
+  return load
 }
 
 export { bootstrapAnimepaheSession, ensureAnimepaheSession, isPaheProtectedUrl, normalizePaheUrl, paheHeaders, paheImageHeaders, paheAnimeReferer, paheResourceHeaders }

@@ -1,4 +1,4 @@
-import { Image, Text, useEffect, useState } from "scripting"
+import { Image, useEffect, useState } from "scripting"
 import { normalizePaheUrl, paheFetchImage } from "../scripts/animepaheClient"
 
 type PaheImageProps = {
@@ -11,15 +11,17 @@ type PaheImageProps = {
   padding?: number
 }
 
-/** Poster / CDN image with animepahe session headers (Image imageUrl cannot send cookies). */
+function isExternalImage(url: string): boolean {
+  if (!url || url.indexOf("http") !== 0) return false
+  const lower = url.toLowerCase()
+  return lower.indexOf("anilist.co") < 0 && lower.indexOf("ibb.co") < 0
+}
+
+/** Poster with session headers when needed. WebP posters use filePath (UIImage is PNG/JPEG only). */
 export function PaheImage(props: PaheImageProps) {
   const rawUrl = props.url
   const url = normalizePaheUrl(rawUrl)
-  const needsAuth =
-    !!url &&
-    url.indexOf("http") === 0 &&
-    url.toLowerCase().indexOf("anilist.co") < 0 &&
-    url.toLowerCase().indexOf("ibb.co") < 0
+  const needsAuth = isExternalImage(url)
   const [uiImage, setUiImage] = useState<any>(null)
   const [filePath, setFilePath] = useState("")
 
@@ -29,50 +31,28 @@ export function PaheImage(props: PaheImageProps) {
       setUiImage(null)
       setFilePath("")
 
-      console.log(
-        "[paheImage] component raw=" +
-          String(rawUrl) +
-          " normalized=" +
-          String(url) +
-          " needsAuth=" +
-          String(needsAuth) +
-          " session=" +
-          String(props.animeSession || "")
-      )
-
-      if (!url) {
-        console.log("[paheImage] component skip: empty url")
-        return
-      }
+      if (!url) return
 
       if (!needsAuth) {
-        console.log("[paheImage] component using plain imageUrl (not pahe-protected)")
+        console.log("[paheImage] direct url", url.slice(0, 80))
         return
       }
+
+      console.log("[paheImage] fetch", url.slice(0, 80), "session=" + String(props.animeSession || ""))
 
       paheFetchImage(url, { animeSession: props.animeSession })
         .then(function (result) {
-          if (cancelled) {
-            console.log("[paheImage] component cancelled", url.slice(0, 80))
-            return
-          }
-          if (!result) {
-            console.log("[paheImage] component fetch returned null", url.slice(0, 80))
-            return
-          }
+          if (cancelled || !result) return
           if (result.kind === "ui") {
-            console.log("[paheImage] component got ui image", url.slice(0, 80))
+            console.log("[paheImage] display ui image", url.slice(0, 80))
             setUiImage(result.image)
-          }
-          if (result.kind === "file") {
-            console.log("[paheImage] component got file path", result.path)
+          } else if (result.kind === "file") {
+            console.log("[paheImage] display file", result.path)
             setFilePath(result.path)
           }
         })
         .catch(function (err) {
-          if (!cancelled) {
-            console.log("[paheImage] component fetch error", String(err))
-          }
+          if (!cancelled) console.log("[paheImage] error", String(err))
         })
 
       return function () {
@@ -82,49 +62,15 @@ export function PaheImage(props: PaheImageProps) {
     [rawUrl, url, needsAuth, props.animeSession]
   )
 
-  if (!needsAuth) {
-    return (
-      <Image
-        imageUrl={url}
-        aspectRatio={props.aspectRatio}
-        frame={props.frame}
-        resizable={props.resizable}
-        padding={props.padding}
-      />
-    )
-  }
-
-  if (uiImage) {
-    return (
-      <Image
-        image={uiImage}
-        aspectRatio={props.aspectRatio}
-        frame={props.frame}
-        resizable={props.resizable}
-        padding={props.padding}
-      />
-    )
-  }
-
-  if (filePath) {
-    return (
-      <Image
-        filePath={filePath}
-        aspectRatio={props.aspectRatio}
-        frame={props.frame}
-        resizable={props.resizable}
-        padding={props.padding}
-      />
-    )
-  }
-
   return (
     <Image
+      image={uiImage || undefined}
+      filePath={!uiImage && filePath ? filePath : undefined}
+      imageUrl={!uiImage && !filePath ? url : undefined}
       aspectRatio={props.aspectRatio}
       frame={props.frame}
       resizable={props.resizable}
       padding={props.padding}
-      placeholder={<Text foregroundStyle="secondaryLabel"> </Text>}
     />
   )
 }

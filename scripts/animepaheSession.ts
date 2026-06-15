@@ -37,10 +37,122 @@ type PendingWebViewFetch = {
 }
 
 let pendingWebViewFetches: Record<number, PendingWebViewFetch> = {}
-let webViewFetchQueue: number[] = []
-let webViewFetchActive = false
+let webViewJsQueue: WebViewJsJob[] = []
+let webViewJsBusy = false
 let nextWebViewFetchId = 1
 let verificationController: any = null
+const WEBVIEW_FETCH_TIMEOUT_MS = 90000
+const fetchTimeouts: Record<number, ReturnType<typeof setTimeout>> = {}
+
+type WebViewJsJob =
+  | { kind: "fetch"; fetchId: number; script: string }
+  | {
+      kind: "script"
+      script: string
+      resolve: (value: any) => void
+      reject: (err: Error) => void
+    }
+
+function clearFetchTimeout(fetchId: number) {
+  const timer = fetchTimeouts[fetchId]
+  if (timer) {
+    clearTimeout(timer)
+    delete fetchTimeouts[fetchId]
+  }
+}
+
+function clearAllFetchTimeouts() {
+  const ids = Object.keys(fetchTimeouts)
+  for (let i = 0; i < ids.length; i++) {
+    clearFetchTimeout(Number(ids[i]))
+  }
+}
+
+function scheduleFetchTimeout(fetchId: number, controller: any) {
+  clearFetchTimeout(fetchId)
+  fetchTimeouts[fetchId] = setTimeout(function () {
+    const pending = pendingWebViewFetches[fetchId]
+    if (!pending) return
+    console.log("[animepaheSession] WebView fetch timed out id=" + String(fetchId))
+    delete pendingWebViewFetches[fetchId]
+    webViewJsBusy = false
+    pending.reject(new Error("WebView fetch timed out"))
+    pumpWebViewJsQueue(controller)
+  }, WEBVIEW_FETCH_TIMEOUT_MS)
+}
+
+function pumpWebViewJsQueue(controller?: any) {
+  const ctrl = controller || webViewController
+  if (webViewJsBusy || !webViewJsQueue.length || !ctrl) return
+
+  const job = webViewJsQueue.shift()
+  if (!job) return
+
+  webViewJsBusy = true
+  if (job.kind === "fetch") {
+    scheduleFetchTimeout(job.fetchId, ctrl)
+  }
+
+  ctrl.evaluateJavaScript(job.script)
+    .then(function (result: any) {
+      if (job.kind === "script") {
+        webViewJsBusy = false
+        job.resolve(result)
+        pumpWebViewJsQueue(ctrl)
+      }
+    })
+    .catch(function (err: any) {
+      console.log("[animepaheSession] evaluateJavaScript error:", String(err))
+      webViewJsBusy = false
+      if (job.kind === "fetch") {
+        clearFetchTimeout(job.fetchId)
+        const pending = pendingWebViewFetches[job.fetchId]
+        delete pendingWebViewFetches[job.fetchId]
+        if (pending) {
+          pending.reject(err instanceof Error ? err : new Error(String(err)))
+        }
+      } else {
+        job.reject(err instanceof Error ? err : new Error(String(err)))
+      }
+      pumpWebViewJsQueue(ctrl)
+    })
+}
+
+function finishWebViewFetch(
+  controller: any,
+  fetchId: number,
+  result: { status: number; body: string; binary?: boolean }
+) {
+  clearFetchTimeout(fetchId)
+  const pending = pendingWebViewFetches[fetchId]
+  if (!pending) {
+    console.log("[animepaheSession] paheFetchDone unknown or stale id=" + String(fetchId))
+    webViewJsBusy = false
+    pumpWebViewJsQueue(controller)
+    return
+  }
+
+  delete pendingWebViewFetches[fetchId]
+  webViewJsBusy = false
+  pending.resolve(result)
+  pumpWebViewJsQueue(controller)
+}
+
+function enqueueWebViewScript(controller: any, script: string): Promise<any> {
+  return new Promise(function (resolve, reject) {
+    if (!controller || !controller.evaluateJavaScript) {
+      reject(new Error("WebView evaluateJavaScript unavailable"))
+      return
+    }
+    webViewJsQueue.push({
+      kind: "script",
+      script: script,
+      resolve: resolve,
+      reject: reject,
+    })
+    pumpWebViewJsQueue(controller)
+  })
+}
 
 function clearWebViewFetchState() {
   const ids = Object.keys(pendingWebViewFetches)
@@ -49,8 +161,9 @@ function clearWebViewFetchState() {
     pending.reject(new Error("WebView disposed"))
   }
   pendingWebViewFetches = {}
-  webViewFetchQueue = []
-  webViewFetchActive = false
+  webViewJsQueue = []
+  webViewJsBusy = false
+  clearAllFetchTimeouts()
 }
 
 function disposeWebViewController() {
@@ -434,36 +547,6 @@ function buildWebViewFetchScript(
   )
 }
 
-function runNextWebViewFetch(controller: any) {
-  if (webViewFetchActive || !webViewFetchQueue.length) return
-
-  const fetchId = webViewFetchQueue.shift()
-  if (fetchId === undefined) return
-
-  const pending = pendingWebViewFetches[fetchId]
-  if (!pending) {
-    runNextWebViewFetch(controller)
-    return
-  }
-
-  webViewFetchActive = true
-  const script = buildWebViewFetchScript(
-    pending.requestUrl || "",
-    pending.referer || getBaseUrl() + "/",
-    pending.fetchMode || "cors",
-    !!pending.expectBinary,
-    fetchId,
-    pending.extraHeaders
-  )
-
-  controller.evaluateJavaScript(script).catch(function (err) {
-    delete pendingWebViewFetches[fetchId]
-    webViewFetchActive = false
-    pending.reject(err instanceof Error ? err : new Error(String(err)))
-    runNextWebViewFetch(controller)
-  })
-}
-
 function webViewFetchViaMessageHandler(
   controller: any,
   requestUrl: string,
@@ -490,8 +573,27 @@ function webViewFetchViaMessageHandler(
       extraHeaders: extraHeaders,
     }
 
-    webViewFetchQueue.push(fetchId)
-    runNextWebViewFetch(controller)
+    const script = buildWebViewFetchScript(
+      requestUrl,
+      referer,
+      fetchMode,
+      asBinary,
+      fetchId,
+      extraHeaders
+    )
+
+    const queued = webViewJsQueue.length + (webViewJsBusy ? 1 : 0)
+    if (queued > 0) {
+      console.log(
+        "[animepaheSession] WebView fetch queued id=" +
+          String(fetchId) +
+          " pending=" +
+          String(queued)
+      )
+    }
+
+    webViewJsQueue.push({ kind: "fetch", fetchId: fetchId, script: script })
+    pumpWebViewJsQueue(controller)
   })
 }
 
@@ -519,16 +621,20 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       }
 
       const fetchId = data && data.id ? Number(data.id) : 0
-      const pending = fetchId ? pendingWebViewFetches[fetchId] : null
-      if (!pending) return "ok"
-
-      delete pendingWebViewFetches[fetchId]
-      webViewFetchActive = false
+      if (!fetchId) {
+        console.log("[animepaheSession] paheFetchDone missing id")
+        webViewJsBusy = false
+        pumpWebViewJsQueue(controller)
+        return "ok"
+      }
 
       const status = data && data.status ? data.status : 0
       const body = data && data.body ? data.body : ""
-      pending.resolve({ status: status, body: body, binary: !!(data && data.binary) })
-      runNextWebViewFetch(controller)
+      finishWebViewFetch(controller, fetchId, {
+        status: status,
+        body: body,
+        binary: !!(data && data.binary),
+      })
       return "ok"
     })
 
@@ -615,7 +721,7 @@ async function injectContinueButton(controller: any) {
     "notify();})();"
 
   try {
-    await controller.evaluateJavaScript(script)
+    await enqueueWebViewScript(controller, script)
   } catch (err) {
     console.log("[animepaheSession] Continue button inject failed:", err)
   }
@@ -625,7 +731,7 @@ async function captureCookiesFromDocument(controller: any): Promise<WebCookie[]>
   if (!controller.evaluateJavaScript) return []
 
   try {
-    const raw = await controller.evaluateJavaScript("return document.cookie || ''")
+    const raw = await enqueueWebViewScript(controller, "return document.cookie || ''")
     console.log("[animepaheSession] document.cookie length:", raw ? String(raw).length : 0)
     if (!raw || typeof raw !== "string" || !raw.trim()) return []
 
