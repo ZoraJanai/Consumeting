@@ -185,6 +185,42 @@ function hostFromBaseUrl(baseUrl: string): string {
   return hostFromUrl(baseUrl)
 }
 
+/** eTLD+1 style domain for animepahe hosts (animepahe.pw === i.animepahe.pw). */
+function registrableDomain(host: string): string {
+  const h = host.toLowerCase().replace(/^www\./, "")
+  const parts = h.split(".")
+  if (parts.length < 2) return h
+  return parts[parts.length - 2] + "." + parts[parts.length - 1]
+}
+
+function isPaheFamilyHost(host: string): boolean {
+  const lower = host.toLowerCase()
+  return (
+    lower.indexOf("animepahe") >= 0 ||
+    lower.indexOf("pahe.win") >= 0 ||
+    lower.indexOf("ppahe.") >= 0
+  )
+}
+
+/** Chrome Sec-Fetch-Site for a request URL vs the configured animepahe base. */
+export function fetchSiteForPaheUrl(requestUrl: string, baseUrl?: string): "same-origin" | "same-site" | "cross-site" {
+  const base = baseUrl || getBaseUrl()
+  const baseHost = hostFromBaseUrl(base)
+  const reqHost = hostFromUrl(requestUrl)
+  if (reqHost === baseHost) return "same-origin"
+  if (registrableDomain(reqHost) === registrableDomain(baseHost)) return "same-site"
+  if (isPaheFamilyHost(reqHost) && isPaheFamilyHost(baseHost)) return "same-site"
+  return "cross-site"
+}
+
+const SEC_CH_UA = '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"'
+
+export function paheAnimeReferer(animeSession?: string): string {
+  const baseUrl = getBaseUrl()
+  if (animeSession) return baseUrl + "/anime/" + animeSession
+  return baseUrl + "/"
+}
+
 /** Headers for API / same-origin XHR on animepahe.pw */
 export function paheHeaders(opts?: {
   referer?: string
@@ -194,9 +230,9 @@ export function paheHeaders(opts?: {
   const baseUrl = getBaseUrl()
   const referer = opts?.referer || baseUrl + "/"
   const mode = opts?.mode || "cors"
-  const baseHost = hostFromBaseUrl(baseUrl)
-  const reqHost = opts?.requestUrl ? hostFromUrl(opts.requestUrl) : baseHost
-  const fetchSite = reqHost === baseHost ? "same-origin" : "cross-site"
+  const fetchSite = opts?.requestUrl
+    ? fetchSiteForPaheUrl(opts.requestUrl, baseUrl)
+    : "same-origin"
 
   const headers: Record<string, string> = {
     Referer: referer,
@@ -221,6 +257,39 @@ export function paheResourceHeaders(referer?: string): Record<string, string> {
 
   const cookies = getStoredCookieHeader()
   if (cookies) headers.Cookie = cookies
+
+  return headers
+}
+
+/** Headers matching Chrome DevTools for i.animepahe.pw poster <img> requests. */
+export function paheImageHeaders(
+  imageUrl: string,
+  opts?: { referer?: string; animeSession?: string }
+): Record<string, string> {
+  const baseUrl = getBaseUrl()
+  const referer = opts?.referer || paheAnimeReferer(opts?.animeSession)
+  const fetchSite = fetchSiteForPaheUrl(imageUrl, baseUrl)
+  const sendCookies =
+    fetchSite === "same-origin" || fetchSite === "same-site" || isPaheProtectedUrl(imageUrl)
+
+  const headers: Record<string, string> = {
+    Referer: referer,
+    "User-Agent": USER_AGENT,
+    Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+    "Sec-Fetch-Dest": "image",
+    "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Site": fetchSite,
+    "sec-ch-ua": SEC_CH_UA,
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+  }
+
+  if (sendCookies) {
+    const cookies = getStoredCookieHeader()
+    if (cookies) headers.Cookie = cookies
+  }
 
   return headers
 }
@@ -258,6 +327,7 @@ export function isPaheProtectedUrl(url: string): boolean {
   if (lower.indexOf(host) >= 0) return true
   if (lower.indexOf("animepahe") >= 0) return true
   if (lower.indexOf("pahe.win") >= 0) return true
+  if (lower.indexOf("ppahe.") >= 0) return true
   return false
 }
 

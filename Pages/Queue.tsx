@@ -80,6 +80,7 @@ function QueueCell({ item }: { item: DownloadAnime }) {
     <HStack frame={{ height: 256 }}>
       <PaheImage
         url={item.img}
+        animeSession={item.source}
         aspectRatio={{ contentMode: "fit", value: 2 / 3 }}
         frame={{ height: 225 }}
         resizable

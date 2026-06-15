@@ -139,6 +139,11 @@ const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
       isUnread: false,
     }));
 
+    if (output.length > 0) {
+      console.log("[searchAnimepahe] sample poster raw:", results[0].poster);
+      console.log("[searchAnimepahe] sample poster normalized:", output[0].img);
+    }
+
     console.log('[searchAnimepahe] DONE - returning', output.length, 'results');
     return output;
   } catch (error) {

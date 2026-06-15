@@ -150,6 +150,7 @@ export function AnimeCell({
         <HStack frame={{ height: 256 }}>
           <PaheImage
             url={anime.img}
+            animeSession={anime.source}
             aspectRatio={{ contentMode: "fit", value: 2 / 3 }}
             frame={{ height: 225 }}
             resizable
