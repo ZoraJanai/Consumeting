@@ -1,5 +1,5 @@
 import { Image, Text, useEffect, useState } from "scripting"
-import { isPaheProtectedUrl, paheFetchImage } from "../scripts/animepaheClient"
+import { isPaheProtectedUrl, normalizePaheUrl, paheFetchImage } from "../scripts/animepaheClient"
 
 type PaheImageProps = {
   url: string
@@ -11,19 +11,23 @@ type PaheImageProps = {
 
 /** Poster / CDN image with animepahe session headers (Image imageUrl cannot send cookies). */
 export function PaheImage(props: PaheImageProps) {
-  const url = props.url
+  const url = normalizePaheUrl(props.url)
   const needsAuth = isPaheProtectedUrl(url)
   const [uiImage, setUiImage] = useState<any>(null)
+  const [filePath, setFilePath] = useState("")
 
   useEffect(
     function () {
       let cancelled = false
       setUiImage(null)
+      setFilePath("")
 
       if (!needsAuth || !url) return
 
-      paheFetchImage(url).then(function (img) {
-        if (!cancelled && img) setUiImage(img)
+      paheFetchImage(url).then(function (result) {
+        if (cancelled || !result) return
+        if (result.kind === "ui") setUiImage(result.image)
+        if (result.kind === "file") setFilePath(result.path)
       })
 
       return function () {
@@ -49,6 +53,18 @@ export function PaheImage(props: PaheImageProps) {
     return (
       <Image
         image={uiImage}
+        aspectRatio={props.aspectRatio}
+        frame={props.frame}
+        resizable={props.resizable}
+        padding={props.padding}
+      />
+    )
+  }
+
+  if (filePath) {
+    return (
+      <Image
+        filePath={filePath}
         aspectRatio={props.aspectRatio}
         frame={props.frame}
         resizable={props.resizable}

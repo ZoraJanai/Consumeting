@@ -1,5 +1,6 @@
 import { fetch } from "scripting"
 import { paheFetchAllEpisodes, paheSearch } from "./animepaheClient"
+import { normalizePaheUrl } from "./animepaheSession"
 
 // Type definitions
 type Anime = {
@@ -134,7 +135,7 @@ const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
       name: item.title,
       source: String(item.session),
       episodes: "0",
-      img: item.poster,
+      img: normalizePaheUrl(item.poster),
       isUnread: false,
     }));
 

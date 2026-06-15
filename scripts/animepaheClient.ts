@@ -11,6 +11,7 @@ import {
   isPaheProtectedUrl,
   isWebViewSessionActive,
   mergeCookieHeaders,
+  normalizePaheUrl,
   paheHeaders,
   playPageHeaders,
   paheResourceHeaders,
@@ -21,14 +22,24 @@ import {
 
 declare const UIImage: {
   fromData(data: any): any | null
-}
-
-declare const Data: {
-  fromBase64(value: string): any
+  fromFile(filePath: string): any | null
+  fromBase64String(base64String: string): any | null
 }
 
 const imageCache: Record<string, any> = {}
-const imageInflight: Record<string, Promise<any | null>> = {}
+const imageFileCache: Record<string, string> = {}
+const imageInflight: Record<string, Promise<PaheImageLoad | null>> = {}
+
+export type PaheImageLoad =
+  | { kind: "ui"; image: any }
+  | { kind: "file"; path: string }
+
+declare const FileManager: {
+  temporaryDirectory: string
+  createDirectory(path: string, recursive?: boolean): Promise<void>
+  writeAsData(path: string, data: any): Promise<void>
+  exists(path: string): Promise<boolean>
+}
 
 type PaginationInfo = { lastPage?: number }
 type StreamSource = {
@@ -276,27 +287,125 @@ function mergeResponseCookies(response: any) {
   }
 }
 
-/** Fetch image bytes with the same session headers as API calls. */
-export async function paheFetchImage(url: string): Promise<any | null> {
-  if (!url) return null
-  if (imageCache[url]) return imageCache[url]
-  if (imageInflight[url]) return imageInflight[url]
+function imageCacheKey(url: string): string {
+  return normalizePaheUrl(url)
+}
 
-  const promise = paheFetchImageInternal(url)
-  imageInflight[url] = promise
+function imageExtFromUrl(url: string, mimeType?: string): string {
+  const lower = url.toLowerCase()
+  if (lower.indexOf(".png") >= 0) return ".png"
+  if (lower.indexOf(".webp") >= 0) return ".webp"
+  if (lower.indexOf(".gif") >= 0) return ".gif"
+  if (mimeType) {
+    if (mimeType.indexOf("png") >= 0) return ".png"
+    if (mimeType.indexOf("webp") >= 0) return ".webp"
+    if (mimeType.indexOf("gif") >= 0) return ".gif"
+  }
+  return ".jpg"
+}
+
+function hashUrl(url: string): string {
+  let hash = 0
+  for (let i = 0; i < url.length; i++) {
+    hash = (hash * 31 + url.charCodeAt(i)) | 0
+  }
+  return String(hash >>> 0)
+}
+
+function dataToUIImage(data: any): any | null {
+  if (!data) return null
+
+  let img = UIImage.fromData(data)
+  if (img) return img
+
   try {
-    return await promise
-  } finally {
-    delete imageInflight[url]
+    if (typeof data.toBase64String === "function") {
+      img = UIImage.fromBase64String(data.toBase64String())
+      if (img) return img
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return null
+}
+
+async function saveImageToCacheFile(
+  url: string,
+  data: any,
+  mimeType?: string
+): Promise<string | null> {
+  try {
+    const dir = FileManager.temporaryDirectory + "/pahe-images/"
+    await FileManager.createDirectory(dir, true)
+    const path = dir + hashUrl(url) + imageExtFromUrl(url, mimeType)
+    await FileManager.writeAsData(path, data)
+
+    let img = UIImage.fromFile(path)
+    if (img) return path
+
+    return path
+  } catch (err) {
+    console.log("[animepaheClient] Image cache write failed:", err)
+    return null
   }
 }
 
-async function paheFetchImageInternal(url: string): Promise<any | null> {
-  if (!isPaheProtectedUrl(url)) return null
+function bodyLooksLikeHtml(body: string): boolean {
+  const sample = body.slice(0, 200).trim().toLowerCase()
+  return sample.indexOf("<!doctype") >= 0 || sample.indexOf("<html") >= 0
+}
+
+/** Fetch image bytes with the same session headers as API calls. */
+export async function paheFetchImage(url: string): Promise<PaheImageLoad | null> {
+  const key = imageCacheKey(url)
+  if (!key) return null
+
+  if (imageCache[key]) return { kind: "ui", image: imageCache[key] }
+  if (imageFileCache[key]) return { kind: "file", path: imageFileCache[key] }
+  if (imageInflight[key]) return imageInflight[key]
+
+  const promise = paheFetchImageInternal(key)
+  imageInflight[key] = promise
+  try {
+    return await promise
+  } finally {
+    delete imageInflight[key]
+  }
+}
+
+async function fetchImageBytes(
+  url: string,
+  headers: Record<string, string>
+): Promise<{ ok: boolean; status: number; data?: any; mimeType?: string; body?: string }> {
+  const response = await fetch(url, { headers })
+  mergeResponseCookies(response)
+
+  const mimeType = response.mimeType || ""
+  if (!response.ok) {
+    const body = await response.text()
+    return { ok: false, status: response.status, body: body, mimeType: mimeType }
+  }
+
+  if (mimeType.indexOf("text/html") >= 0 || mimeType.indexOf("application/json") >= 0) {
+    const body = await response.text()
+    return { ok: false, status: response.status, body: body, mimeType: mimeType }
+  }
+
+  const data = await response.data()
+  return { ok: true, status: response.status, data: data, mimeType: mimeType }
+}
+
+async function paheFetchImageInternal(url: string): Promise<PaheImageLoad | null> {
+  if (!isPaheProtectedUrl(url)) {
+    console.log("[animepaheClient] Image URL not protected:", url.slice(0, 80))
+    return null
+  }
 
   await ensureAnimepaheSession()
   const referer = getBaseUrl() + "/"
   const resourceHeaders = paheResourceHeaders(referer)
+  const apiStyleHeaders = paheHeaders({ referer: referer, mode: "cors", requestUrl: url })
 
   if (isWebViewSessionActive()) {
     try {
@@ -305,31 +414,62 @@ async function paheFetchImageInternal(url: string): Promise<any | null> {
         console.log("[animepaheClient] WebView image HTTP", result.status, url.slice(0, 80))
         return null
       }
-      const data = Data.fromBase64(result.body)
-      const img = UIImage.fromData(data)
-      if (img) imageCache[url] = img
-      return img
+      if (bodyLooksLikeHtml(result.body)) {
+        console.log("[animepaheClient] WebView image got HTML:", url.slice(0, 80))
+        return null
+      }
+      const img = UIImage.fromBase64String(result.body)
+      if (img) {
+        imageCache[url] = img
+        return { kind: "ui", image: img }
+      }
+      console.log("[animepaheClient] WebView image decode failed:", url.slice(0, 80))
+      return null
     } catch (err) {
       console.log("[animepaheClient] WebView image fetch failed:", err)
       return null
     }
   }
 
-  try {
-    const response = await fetch(url, { headers: resourceHeaders })
-    mergeResponseCookies(response)
-    if (!response.ok) {
-      console.log("[animepaheClient] Image HTTP", response.status, url.slice(0, 80))
-      return null
+  const headerSets = [resourceHeaders, apiStyleHeaders, { Referer: referer, "User-Agent": resourceHeaders["User-Agent"] }]
+
+  for (let i = 0; i < headerSets.length; i++) {
+    try {
+      const result = await fetchImageBytes(url, headerSets[i])
+      if (!result.ok) {
+        console.log(
+          "[animepaheClient] Image HTTP",
+          result.status,
+          "try",
+          String(i + 1),
+          url.slice(0, 80),
+          result.body ? result.body.slice(0, 60) : ""
+        )
+        continue
+      }
+
+      const img = dataToUIImage(result.data)
+      if (img) {
+        imageCache[url] = img
+        return { kind: "ui", image: img }
+      }
+
+      const path = await saveImageToCacheFile(url, result.data, result.mimeType)
+      if (path) {
+        imageFileCache[url] = path
+        const fileImg = UIImage.fromFile(path)
+        if (fileImg) {
+          imageCache[url] = fileImg
+          return { kind: "ui", image: fileImg }
+        }
+        return { kind: "file", path: path }
+      }
+    } catch (err) {
+      console.log("[animepaheClient] Image fetch try", String(i + 1), "failed:", err)
     }
-    const data = await response.data()
-    const img = UIImage.fromData(data)
-    if (img) imageCache[url] = img
-    return img
-  } catch (err) {
-    console.log("[animepaheClient] Image fetch failed:", err)
-    return null
   }
+
+  return null
 }
 
-export { bootstrapAnimepaheSession, ensureAnimepaheSession, isPaheProtectedUrl, paheHeaders, paheResourceHeaders }
+export { bootstrapAnimepaheSession, ensureAnimepaheSession, isPaheProtectedUrl, normalizePaheUrl, paheHeaders, paheResourceHeaders }

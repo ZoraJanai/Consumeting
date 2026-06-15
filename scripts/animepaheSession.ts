@@ -234,11 +234,22 @@ export function playPageHeaders(sessionId: string): Record<string, string> {
   return paheHeaders({ referer: getBaseUrl() + "/anime/" + sessionId, mode: "navigate" })
 }
 
+export function normalizePaheUrl(url: string): string {
+  if (!url) return ""
+  let normalized = url.trim()
+  if (normalized.indexOf("//") === 0) normalized = "https:" + normalized
+  if (normalized.indexOf("/") === 0 && normalized.indexOf("//") !== 0) {
+    normalized = getBaseUrl() + normalized
+  }
+  return normalized
+}
+
 /** URLs that need session cookies / referer (posters, CDN, site assets). */
 export function isPaheProtectedUrl(url: string): boolean {
-  if (!url || url.indexOf("http") !== 0) return false
+  const normalized = normalizePaheUrl(url)
+  if (!normalized || normalized.indexOf("http") !== 0) return false
 
-  const lower = url.toLowerCase()
+  const lower = normalized.toLowerCase()
   if (lower.indexOf("anilist.co") >= 0) return false
   if (lower.indexOf("graphql.anilist") >= 0) return false
   if (lower.indexOf("ibb.co") >= 0) return false
@@ -246,6 +257,7 @@ export function isPaheProtectedUrl(url: string): boolean {
   const host = hostFromBaseUrl(getBaseUrl()).toLowerCase()
   if (lower.indexOf(host) >= 0) return true
   if (lower.indexOf("animepahe") >= 0) return true
+  if (lower.indexOf("pahe.win") >= 0) return true
   return false
 }
 
