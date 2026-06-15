@@ -9,6 +9,7 @@ import {
   directFetchPlayPage,
   getDirectBaseUrl,
   paheFetchStreamingSourcesFromApi,
+  paheHeaders,
 } from "./animepaheClient"
 
 // ---- Types ----
@@ -100,7 +101,7 @@ function useApiMode(): boolean {
 
 async function extractKwikUrl(kwikUrl: string): Promise<string> {
   const response = await fetch(kwikUrl, {
-    headers: { Referer: `${getDirectBaseUrl()}/` },
+    headers: paheHeaders({ referer: getDirectBaseUrl() + "/", mode: "navigate" }),
   })
 
   if (!response.ok) {

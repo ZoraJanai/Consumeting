@@ -26,8 +26,9 @@ let sessionReady = false
 let webViewController: any = null
 
 type PendingWebViewFetch = {
-  resolve: (result: { status: number; body: string }) => void
+  resolve: (result: { status: number; body: string; binary?: boolean }) => void
   reject: (err: Error) => void
+  expectBinary?: boolean
 }
 
 let pendingWebViewFetch: PendingWebViewFetch | null = null
@@ -152,41 +153,78 @@ export function mergeCookieHeaders(existing: string, incoming: string): string {
   return merged.join("; ")
 }
 
-function hostFromBaseUrl(baseUrl: string): string {
-  const match = baseUrl.match(/^https?:\/\/([^/?#]+)/i)
-  const host = match ? match[1] : baseUrl
+function hostFromUrl(url: string): string {
+  const match = url.match(/^https?:\/\/([^/?#]+)/i)
+  const host = match ? match[1] : url
   return host.replace(/^www\./, "")
+}
+
+function hostFromBaseUrl(baseUrl: string): string {
+  return hostFromUrl(baseUrl)
+}
+
+/** Headers for API / same-origin XHR on animepahe.pw */
+export function paheHeaders(opts?: {
+  referer?: string
+  mode?: "cors" | "navigate"
+  requestUrl?: string
+}): Record<string, string> {
+  const baseUrl = getBaseUrl()
+  const referer = opts?.referer || baseUrl + "/"
+  const mode = opts?.mode || "cors"
+  const baseHost = hostFromBaseUrl(baseUrl)
+  const reqHost = opts?.requestUrl ? hostFromUrl(opts.requestUrl) : baseHost
+  const fetchSite = reqHost === baseHost ? "same-origin" : "cross-site"
+
+  const headers: Record<string, string> = {
+    Referer: referer,
+    "User-Agent": USER_AGENT,
+    "Sec-Fetch-Site": fetchSite,
+    "Sec-Fetch-Mode": mode,
+  }
+
+  const cookies = getStoredCookieHeader()
+  if (cookies) headers.Cookie = cookies
+
+  return headers
+}
+
+/** Headers for posters / CDN images (Referer + Cookie, no sec-fetch). */
+export function paheResourceHeaders(referer?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    Referer: referer || getBaseUrl() + "/",
+    "User-Agent": USER_AGENT,
+    Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+  }
+
+  const cookies = getStoredCookieHeader()
+  if (cookies) headers.Cookie = cookies
+
+  return headers
 }
 
 /** Headers matching a same-origin browser fetch to /api (see DevTools Network tab). */
 export function apiHeaders(_sessionId?: string): Record<string, string> {
-  const baseUrl = getBaseUrl()
-  const headers: Record<string, string> = {
-    Referer: baseUrl + "/",
-    "User-Agent": USER_AGENT,
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-Mode": "cors",
-  }
-
-  const cookies = getStoredCookieHeader()
-  if (cookies) headers.Cookie = cookies
-
-  return headers
+  return paheHeaders({ referer: getBaseUrl() + "/", mode: "cors" })
 }
 
 export function playPageHeaders(sessionId: string): Record<string, string> {
-  const baseUrl = getBaseUrl()
-  const headers: Record<string, string> = {
-    Referer: baseUrl + "/anime/" + sessionId,
-    "User-Agent": USER_AGENT,
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-Mode": "navigate",
-  }
+  return paheHeaders({ referer: getBaseUrl() + "/anime/" + sessionId, mode: "navigate" })
+}
 
-  const cookies = getStoredCookieHeader()
-  if (cookies) headers.Cookie = cookies
+/** URLs that need session cookies / referer (posters, CDN, site assets). */
+export function isPaheProtectedUrl(url: string): boolean {
+  if (!url || url.indexOf("http") !== 0) return false
 
-  return headers
+  const lower = url.toLowerCase()
+  if (lower.indexOf("anilist.co") >= 0) return false
+  if (lower.indexOf("graphql.anilist") >= 0) return false
+  if (lower.indexOf("ibb.co") >= 0) return false
+
+  const host = hostFromBaseUrl(getBaseUrl()).toLowerCase()
+  if (lower.indexOf(host) >= 0) return true
+  if (lower.indexOf("animepahe") >= 0) return true
+  return false
 }
 
 function saveResponseCookies(response: any) {
@@ -241,16 +279,45 @@ async function preloadStoredCookies(controller: any, baseUrl: string) {
   }
 }
 
-function buildWebViewFetchScript(requestUrl: string, referer: string, fetchMode: string): string {
+function buildWebViewFetchScript(
+  requestUrl: string,
+  referer: string,
+  fetchMode: string,
+  asBinary: boolean,
+  extraHeaders?: Record<string, string>
+): string {
+  let headerPairs = "Referer:'" + referer + "'"
+  if (extraHeaders) {
+    const keys = Object.keys(extraHeaders)
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
+      if (key === "Referer") continue
+      headerPairs += ",'" + key + "':'" + String(extraHeaders[key]).replace(/'/g, "\\'") + "'"
+    }
+  } else {
+    headerPairs += ",'Sec-Fetch-Site':'same-origin','Sec-Fetch-Mode':'" + fetchMode + "'"
+  }
+
+  const fetchHeaders = "{" + headerPairs + "}"
+
+  if (!asBinary) {
+    return (
+      "(function(){fetch('" +
+      requestUrl +
+      "',{credentials:'include',headers:" +
+      fetchHeaders +
+      "}).then(function(r){return r.text().then(function(t){window.webkit.messageHandlers.paheFetchDone.postMessage({status:r.status,body:t});});})" +
+      ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({status:0,body:String(e)});});})();"
+    )
+  }
+
   return (
     "(function(){fetch('" +
     requestUrl +
-    "',{credentials:'include',headers:{Referer:'" +
-    referer +
-    "','Sec-Fetch-Site':'same-origin','Sec-Fetch-Mode':'" +
-    fetchMode +
-    "'}}).then(function(r){return r.text().then(function(t){window.webkit.messageHandlers.paheFetchDone.postMessage({status:r.status,body:t});});})" +
-    ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({status:0,body:String(e)});});})();"
+    "',{credentials:'include',headers:" +
+    fetchHeaders +
+    "}).then(function(r){return r.arrayBuffer().then(function(buf){var u8=new Uint8Array(buf);var bin='';var step=0x8000;for(var i=0;i<u8.length;i+=step){bin+=String.fromCharCode.apply(null,u8.subarray(i,i+step));}window.webkit.messageHandlers.paheFetchDone.postMessage({status:r.status,body:btoa(bin),binary:true});});})" +
+    ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({status:0,body:String(e),binary:true});});})();"
   )
 }
 
@@ -258,8 +325,10 @@ function webViewFetchViaMessageHandler(
   controller: any,
   requestUrl: string,
   referer: string,
-  fetchMode: string
-): Promise<{ status: number; body: string }> {
+  fetchMode: string,
+  asBinary = false,
+  extraHeaders?: Record<string, string>
+): Promise<{ status: number; body: string; binary?: boolean }> {
   return new Promise(function (resolve, reject) {
     if (!controller || !controller.evaluateJavaScript) {
       reject(new Error("WebView evaluateJavaScript unavailable"))
@@ -270,9 +339,11 @@ function webViewFetchViaMessageHandler(
       return
     }
 
-    pendingWebViewFetch = { resolve: resolve, reject: reject }
+    pendingWebViewFetch = { resolve: resolve, reject: reject, expectBinary: asBinary }
 
-    controller.evaluateJavaScript(buildWebViewFetchScript(requestUrl, referer, fetchMode)).catch(function (err) {
+    controller.evaluateJavaScript(
+      buildWebViewFetchScript(requestUrl, referer, fetchMode, asBinary, extraHeaders)
+    ).catch(function (err) {
       if (pendingWebViewFetch) {
         pendingWebViewFetch = null
         reject(err instanceof Error ? err : new Error(String(err)))
@@ -301,7 +372,7 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       pendingWebViewFetch = null
       const status = data && data.status ? data.status : 0
       const body = data && data.body ? data.body : ""
-      pending.resolve({ status: status, body: body })
+      pending.resolve({ status: status, body: body, binary: !!(data && data.binary) })
       return "ok"
     })
   } else {
@@ -490,7 +561,27 @@ export async function webViewFetch(
   if (!webViewController) {
     throw new Error("No active WebView session")
   }
-  return webViewFetchViaMessageHandler(webViewController, requestUrl, referer, fetchMode)
+  return webViewFetchViaMessageHandler(webViewController, requestUrl, referer, fetchMode, false)
+}
+
+/** Binary fetch inside the live WebView (for poster images, etc.). */
+export async function webViewFetchBinary(
+  requestUrl: string,
+  referer: string,
+  fetchMode: "cors" | "navigate" = "cors",
+  extraHeaders?: Record<string, string>
+): Promise<{ status: number; body: string; binary?: boolean }> {
+  if (!webViewController) {
+    throw new Error("No active WebView session")
+  }
+  return webViewFetchViaMessageHandler(
+    webViewController,
+    requestUrl,
+    referer,
+    fetchMode,
+    true,
+    extraHeaders
+  )
 }
 
 async function probeApi(baseUrl: string): Promise<boolean> {

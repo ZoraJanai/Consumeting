@@ -8,12 +8,26 @@ import {
   getStoredCookieHeader,
   isChallengePage,
   isLikelyJsonApi,
+  isPaheProtectedUrl,
   isWebViewSessionActive,
   mergeCookieHeaders,
+  paheHeaders,
   playPageHeaders,
+  paheResourceHeaders,
   saveCookieHeader,
   webViewFetch,
+  webViewFetchBinary,
 } from "./animepaheSession"
+
+declare const UIImage: {
+  fromData(data: any): any | null
+}
+
+declare const Data: {
+  fromBase64(value: string): any
+}
+
+const imageCache: Record<string, any> = {}
 
 type PaginationInfo = { lastPage?: number }
 type StreamSource = {
@@ -68,16 +82,7 @@ async function directFetch(
   const response = await fetch(requestUrl, { headers })
   const body = await response.text()
 
-  if (response.cookies && response.cookies.length) {
-    const parts: string[] = []
-    for (let i = 0; i < response.cookies.length; i++) {
-      parts.push(response.cookies[i].name + "=" + response.cookies[i].value)
-    }
-    const incoming = parts.join("; ")
-    if (incoming) {
-      saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), incoming))
-    }
-  }
+  mergeResponseCookies(response)
 
   if (response.ok) {
     if (!expectJson || isLikelyJsonApi(body)) return body
@@ -257,4 +262,59 @@ export async function paheFetchStreamingSourcesFromApi(
   return dict
 }
 
-export { bootstrapAnimepaheSession, ensureAnimepaheSession }
+function mergeResponseCookies(response: any) {
+  if (!response.cookies || !response.cookies.length) return
+
+  const parts: string[] = []
+  for (let i = 0; i < response.cookies.length; i++) {
+    parts.push(response.cookies[i].name + "=" + response.cookies[i].value)
+  }
+  const incoming = parts.join("; ")
+  if (incoming) {
+    saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), incoming))
+  }
+}
+
+/** Fetch image bytes with the same session headers as API calls. */
+export async function paheFetchImage(url: string): Promise<any | null> {
+  if (!url) return null
+  if (imageCache[url]) return imageCache[url]
+
+  if (!isPaheProtectedUrl(url)) return null
+
+  await ensureAnimepaheSession()
+  const referer = getBaseUrl() + "/"
+  const resourceHeaders = paheResourceHeaders(referer)
+
+  if (isWebViewSessionActive()) {
+    try {
+      const result = await webViewFetchBinary(url, referer, "cors", resourceHeaders)
+      if (result.status < 200 || result.status >= 300 || !result.binary) return null
+      const data = Data.fromBase64(result.body)
+      const img = UIImage.fromData(data)
+      if (img) imageCache[url] = img
+      return img
+    } catch (err) {
+      console.log("[animepaheClient] WebView image fetch failed:", err)
+      return null
+    }
+  }
+
+  try {
+    const response = await fetch(url, { headers: resourceHeaders })
+    mergeResponseCookies(response)
+    if (!response.ok) {
+      console.log("[animepaheClient] Image HTTP", response.status, url.slice(0, 80))
+      return null
+    }
+    const data = await response.data()
+    const img = UIImage.fromData(data)
+    if (img) imageCache[url] = img
+    return img
+  } catch (err) {
+    console.log("[animepaheClient] Image fetch failed:", err)
+    return null
+  }
+}
+
+export { bootstrapAnimepaheSession, ensureAnimepaheSession, isPaheProtectedUrl, paheHeaders, paheResourceHeaders }

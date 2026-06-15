@@ -1,10 +1,11 @@
 import {
-  Button, Circle, ContentUnavailableView, HStack, Image, Label, List, Menu,
+  Button, Circle, ContentUnavailableView, HStack, Label, List, Menu,
   NavigationStack, RoundedRectangle, Section, Spacer, Text, useEffect, useState, VStack, ZStack
 } from "scripting"
 
 import { NumberInputSheet } from "./numberPopout"
 import { getInfoAnilist, getInfoAnimepahe } from "../scripts/search"
+import { PaheImage } from "./PaheImage"
 import { downloadEpisode, episodeNumber, getEpisode, QualitiesOrder } from "../scripts/episode"
 import { getCache, getQueue, saveCache, saveQueue, addCache, addQueue } from "../scripts/cache"
 import { hideOverlay, showOverlay } from "./Loading"
@@ -147,8 +148,8 @@ export function AnimeCell({
     <Menu
       label={
         <HStack frame={{ height: 256 }}>
-          <Image
-            imageUrl={anime.img}
+          <PaheImage
+            url={anime.img}
             aspectRatio={{ contentMode: "fit", value: 2 / 3 }}
             frame={{ height: 225 }}
             resizable
