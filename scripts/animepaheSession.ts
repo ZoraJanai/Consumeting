@@ -26,15 +26,37 @@ let sessionReady = false
 let webViewController: any = null
 
 type PendingWebViewFetch = {
+  id: number
   resolve: (result: { status: number; body: string; binary?: boolean }) => void
   reject: (err: Error) => void
   expectBinary?: boolean
+  requestUrl?: string
+  referer?: string
+  fetchMode?: string
+  extraHeaders?: Record<string, string>
 }
 
-let pendingWebViewFetch: PendingWebViewFetch | null = null
+let pendingWebViewFetches: Record<number, PendingWebViewFetch> = {}
+let webViewFetchQueue: number[] = []
+let webViewFetchActive = false
+let nextWebViewFetchId = 1
+let verificationController: any = null
+
+function clearWebViewFetchState() {
+  const ids = Object.keys(pendingWebViewFetches)
+  for (let i = 0; i < ids.length; i++) {
+    const pending = pendingWebViewFetches[Number(ids[i])]
+    pending.reject(new Error("WebView disposed"))
+  }
+  pendingWebViewFetches = {}
+  webViewFetchQueue = []
+  webViewFetchActive = false
+}
 
 function disposeWebViewController() {
   if (!webViewController) return
+  clearWebViewFetchState()
+  verificationController = null
   try {
     webViewController.dispose()
   } catch {
@@ -284,6 +306,7 @@ function buildWebViewFetchScript(
   referer: string,
   fetchMode: string,
   asBinary: boolean,
+  fetchId: number,
   extraHeaders?: Record<string, string>
 ): string {
   let headerPairs = "Referer:'" + referer + "'"
@@ -306,8 +329,12 @@ function buildWebViewFetchScript(
       requestUrl +
       "',{credentials:'include',headers:" +
       fetchHeaders +
-      "}).then(function(r){return r.text().then(function(t){window.webkit.messageHandlers.paheFetchDone.postMessage({status:r.status,body:t});});})" +
-      ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({status:0,body:String(e)});});})();"
+      "}).then(function(r){return r.text().then(function(t){window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
+      String(fetchId) +
+      ",status:r.status,body:t});});})" +
+      ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
+      String(fetchId) +
+      ",status:0,body:String(e)});});})();"
     )
   }
 
@@ -316,9 +343,43 @@ function buildWebViewFetchScript(
     requestUrl +
     "',{credentials:'include',headers:" +
     fetchHeaders +
-    "}).then(function(r){return r.arrayBuffer().then(function(buf){var u8=new Uint8Array(buf);var bin='';var step=0x8000;for(var i=0;i<u8.length;i+=step){bin+=String.fromCharCode.apply(null,u8.subarray(i,i+step));}window.webkit.messageHandlers.paheFetchDone.postMessage({status:r.status,body:btoa(bin),binary:true});});})" +
-    ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({status:0,body:String(e),binary:true});});})();"
+    "}).then(function(r){return r.arrayBuffer().then(function(buf){var u8=new Uint8Array(buf);var bin='';var step=0x8000;for(var i=0;i<u8.length;i+=step){bin+=String.fromCharCode.apply(null,u8.subarray(i,i+step));}window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
+    String(fetchId) +
+    ",status:r.status,body:btoa(bin),binary:true});});})" +
+    ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
+    String(fetchId) +
+    ",status:0,body:String(e),binary:true});});})();"
   )
+}
+
+function runNextWebViewFetch(controller: any) {
+  if (webViewFetchActive || !webViewFetchQueue.length) return
+
+  const fetchId = webViewFetchQueue.shift()
+  if (fetchId === undefined) return
+
+  const pending = pendingWebViewFetches[fetchId]
+  if (!pending) {
+    runNextWebViewFetch(controller)
+    return
+  }
+
+  webViewFetchActive = true
+  const script = buildWebViewFetchScript(
+    pending.requestUrl || "",
+    pending.referer || getBaseUrl() + "/",
+    pending.fetchMode || "cors",
+    !!pending.expectBinary,
+    fetchId,
+    pending.extraHeaders
+  )
+
+  controller.evaluateJavaScript(script).catch(function (err) {
+    delete pendingWebViewFetches[fetchId]
+    webViewFetchActive = false
+    pending.reject(err instanceof Error ? err : new Error(String(err)))
+    runNextWebViewFetch(controller)
+  })
 }
 
 function webViewFetchViaMessageHandler(
@@ -334,22 +395,31 @@ function webViewFetchViaMessageHandler(
       reject(new Error("WebView evaluateJavaScript unavailable"))
       return
     }
-    if (pendingWebViewFetch) {
-      reject(new Error("WebView fetch already in progress"))
-      return
+
+    const fetchId = nextWebViewFetchId++
+    pendingWebViewFetches[fetchId] = {
+      id: fetchId,
+      resolve: resolve,
+      reject: reject,
+      expectBinary: asBinary,
+      requestUrl: requestUrl,
+      referer: referer,
+      fetchMode: fetchMode,
+      extraHeaders: extraHeaders,
     }
 
-    pendingWebViewFetch = { resolve: resolve, reject: reject, expectBinary: asBinary }
-
-    controller.evaluateJavaScript(
-      buildWebViewFetchScript(requestUrl, referer, fetchMode, asBinary, extraHeaders)
-    ).catch(function (err) {
-      if (pendingWebViewFetch) {
-        pendingWebViewFetch = null
-        reject(err instanceof Error ? err : new Error(String(err)))
-      }
-    })
+    webViewFetchQueue.push(fetchId)
+    runNextWebViewFetch(controller)
   })
+}
+
+async function reinjectAfterNavigation(controller: any) {
+  try {
+    if (controller.waitForLoad) await controller.waitForLoad()
+  } catch {
+    /* ignore */
+  }
+  await injectContinueButton(controller)
 }
 
 async function registerWebViewHandlers(controller: any, baseUrl: string) {
@@ -357,8 +427,6 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
 
   if (controller.addScriptMessageHandler) {
     await controller.addScriptMessageHandler("paheFetchDone", function (payload: any) {
-      if (!pendingWebViewFetch) return "ok"
-
       let data = payload
       if (typeof payload === "string") {
         try {
@@ -368,11 +436,23 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
         }
       }
 
-      const pending = pendingWebViewFetch
-      pendingWebViewFetch = null
+      const fetchId = data && data.id ? Number(data.id) : 0
+      const pending = fetchId ? pendingWebViewFetches[fetchId] : null
+      if (!pending) return "ok"
+
+      delete pendingWebViewFetches[fetchId]
+      webViewFetchActive = false
+
       const status = data && data.status ? data.status : 0
       const body = data && data.body ? data.body : ""
       pending.resolve({ status: status, body: body, binary: !!(data && data.binary) })
+      runNextWebViewFetch(controller)
+      return "ok"
+    })
+
+    await controller.addScriptMessageHandler("pahePageReady", async function (pageUrl: string) {
+      console.log("[animepaheSession] WebView navigated:", pageUrl)
+      await injectContinueButton(controller)
       return "ok"
     })
   } else {
@@ -380,16 +460,28 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
   }
 
   controller.shouldAllowRequest = async function (request: any) {
-    if (!request || !request.url || request.url.indexOf(host) < 0) return true
+    if (!request || !request.url) return true
 
-    const headers = request.headers || {}
-    const cookie = headers.Cookie || headers.cookie
-    if (cookie) {
-      saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), cookie))
-      console.log("[animepaheSession] Sniffed request Cookie length:", cookie.length)
+    if (request.url.indexOf(host) >= 0) {
+      const headers = request.headers || {}
+      const cookie = headers.Cookie || headers.cookie
+      if (cookie) {
+        saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), cookie))
+      }
+
+      const navType = request.navigationType || ""
+      const isMainDoc =
+        navType === "linkActivated" ||
+        navType === "other" ||
+        navType === "formSubmitted" ||
+        navType === "reload" ||
+        navType === "backForward"
+
+      if (isMainDoc) {
+        void reinjectAfterNavigation(controller)
+      }
     }
 
-    injectContinueButton(controller)
     return true
   }
 }
@@ -428,11 +520,17 @@ async function injectContinueButton(controller: any) {
 
   const script =
     "(function(){function addBtn(){if(!window.webkit||!window.webkit.messageHandlers||!window.webkit.messageHandlers.paheContinue)return;" +
-    "if(document.getElementById('pahe-continue'))return;var btn=document.createElement('button');btn.id='pahe-continue';" +
+    "var old=document.getElementById('pahe-continue');if(old)old.remove();" +
+    "var btn=document.createElement('button');btn.id='pahe-continue';" +
     "btn.textContent='Continue to app';btn.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:16px 24px;font-size:17px;font-weight:600;background:#007AFF;color:#fff;border:none;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.35);';" +
     "btn.onclick=function(){window.webkit.messageHandlers.paheContinue.postMessage('');};" +
-    "(document.body||document.documentElement).appendChild(btn);}addBtn();" +
-    "try{new MutationObserver(addBtn).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();"
+    "(document.body||document.documentElement).appendChild(btn);}" +
+    "function notify(){addBtn();if(window.webkit.messageHandlers.pahePageReady){try{window.webkit.messageHandlers.pahePageReady.postMessage(location.href||'');}catch(e){}}}" +
+    "if(!window.__paheNavSetup){window.__paheNavSetup=true;" +
+    "window.addEventListener('load',notify);window.addEventListener('pageshow',notify);" +
+    "if(window.__paheNavTimer){clearInterval(window.__paheNavTimer);}" +
+    "window.__paheNavTimer=setInterval(addBtn,2000);}" +
+    "notify();})();"
 
   try {
     await controller.evaluateJavaScript(script)
@@ -600,6 +698,7 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
   disposeWebViewController()
   const controller = new WebViewController()
   webViewController = controller
+  verificationController = controller
 
   let webViewProbeOk = false
 
@@ -629,6 +728,7 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
 
     if (!webViewProbeOk) {
       console.log("[animepaheSession] Sheet closed — probing live WebView session")
+      await reinjectAfterNavigation(controller)
       await saveCookiesFromWebView(controller, baseUrl)
       webViewProbeOk = await probeApiInWebView(controller, baseUrl)
     }

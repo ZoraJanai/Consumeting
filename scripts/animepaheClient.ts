@@ -28,6 +28,7 @@ declare const Data: {
 }
 
 const imageCache: Record<string, any> = {}
+const imageInflight: Record<string, Promise<any | null>> = {}
 
 type PaginationInfo = { lastPage?: number }
 type StreamSource = {
@@ -279,7 +280,18 @@ function mergeResponseCookies(response: any) {
 export async function paheFetchImage(url: string): Promise<any | null> {
   if (!url) return null
   if (imageCache[url]) return imageCache[url]
+  if (imageInflight[url]) return imageInflight[url]
 
+  const promise = paheFetchImageInternal(url)
+  imageInflight[url] = promise
+  try {
+    return await promise
+  } finally {
+    delete imageInflight[url]
+  }
+}
+
+async function paheFetchImageInternal(url: string): Promise<any | null> {
   if (!isPaheProtectedUrl(url)) return null
 
   await ensureAnimepaheSession()
@@ -289,7 +301,10 @@ export async function paheFetchImage(url: string): Promise<any | null> {
   if (isWebViewSessionActive()) {
     try {
       const result = await webViewFetchBinary(url, referer, "cors", resourceHeaders)
-      if (result.status < 200 || result.status >= 300 || !result.binary) return null
+      if (result.status < 200 || result.status >= 300 || !result.binary) {
+        console.log("[animepaheClient] WebView image HTTP", result.status, url.slice(0, 80))
+        return null
+      }
       const data = Data.fromBase64(result.body)
       const img = UIImage.fromData(data)
       if (img) imageCache[url] = img
