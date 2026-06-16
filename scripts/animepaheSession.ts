@@ -22,16 +22,13 @@ const USER_AGENT =
 const REQUIRED_COOKIE_NAMES = ["cf_clearance", "__ddg2_", "animepahe_session", "XSRF-TOKEN"]
 
 let bootstrapInFlight: Promise<boolean> | null = null
-let posterWebViewInit: Promise<boolean> | null = null
 let sessionReady = false
 let webViewController: any = null
 
 type PendingWebViewFetch = {
   id: number
-  resolve: (result: { status: number; body: string; binary?: boolean; dataUrl?: boolean }) => void
+  resolve: (result: { status: number; body: string }) => void
   reject: (err: Error) => void
-  expectBinary?: boolean
-  expectDataUrl?: boolean
   requestUrl?: string
   referer?: string
   fetchMode?: string
@@ -123,7 +120,7 @@ function pumpWebViewJsQueue(controller?: any) {
 function finishWebViewFetch(
   controller: any,
   fetchId: number,
-  result: { status: number; body: string; binary?: boolean; dataUrl?: boolean }
+  result: { status: number; body: string }
 ) {
   clearFetchTimeout(fetchId)
   const pending = pendingWebViewFetches[fetchId]
@@ -172,7 +169,6 @@ function disposeWebViewController() {
   if (!webViewController) return
   clearWebViewFetchState()
   verificationController = null
-  posterWebViewInit = null
   try {
     webViewController.dispose()
   } catch {
@@ -183,11 +179,6 @@ function disposeWebViewController() {
 
 export function isWebViewSessionActive(): boolean {
   return !!webViewController && !!loadSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false)
-}
-
-/** WebView controller still mounted (e.g. after verify sheet) — jar may have HttpOnly cookies. */
-export function hasWebViewController(): boolean {
-  return !!webViewController
 }
 
 export function getBaseUrl(): string {
@@ -334,18 +325,10 @@ export function fetchSiteForPaheUrl(requestUrl: string, baseUrl?: string): "same
   return "cross-site"
 }
 
-const SEC_CH_UA = '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"'
-
-export function paheAnimeReferer(animeSession?: string): string {
-  const baseUrl = getBaseUrl()
-  if (animeSession) return baseUrl + "/anime/" + animeSession
-  return baseUrl + "/"
-}
-
 /** Headers for API / same-origin XHR on animepahe.pw */
 export function paheHeaders(opts?: {
   referer?: string
-  mode?: "cors" | "navigate" | "no-cors"
+  mode?: "cors" | "navigate"
   requestUrl?: string
 }): Record<string, string> {
   const baseUrl = getBaseUrl()
@@ -360,71 +343,6 @@ export function paheHeaders(opts?: {
     "User-Agent": USER_AGENT,
     "Sec-Fetch-Site": fetchSite,
     "Sec-Fetch-Mode": mode,
-  }
-
-  const cookies = getStoredCookieHeader()
-  if (cookies) headers.Cookie = cookies
-
-  return headers
-}
-
-/** Headers for posters / CDN images (Referer + Cookie, no sec-fetch). */
-export function paheResourceHeaders(referer?: string): Record<string, string> {
-  const headers: Record<string, string> = {
-    Referer: referer || getBaseUrl() + "/",
-    "User-Agent": USER_AGENT,
-    Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-  }
-
-  const cookies = getStoredCookieHeader()
-  if (cookies) headers.Cookie = cookies
-
-  return headers
-}
-
-/** Headers matching Chrome DevTools for i.animepahe.pw poster <img> requests (not API headers). */
-export function paheImageHeaders(
-  imageUrl: string,
-  opts?: { referer?: string; animeSession?: string }
-): Record<string, string> {
-  const referer = opts?.referer || paheAnimeReferer(opts?.animeSession)
-  const headers = paheHeaders({
-    referer: referer,
-    mode: "no-cors",
-    requestUrl: imageUrl,
-  })
-
-  headers.Accept = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-  headers["Cache-Control"] = "no-cache"
-  headers.Pragma = "no-cache"
-  headers["Sec-Fetch-Dest"] = "image"
-  headers["sec-ch-ua"] = SEC_CH_UA
-  headers["sec-ch-ua-mobile"] = "?0"
-  headers["sec-ch-ua-platform"] = '"Windows"'
-
-  return headers
-}
-
-/**
- * Direct GET to i.animepahe.pw (typing URL in the address bar).
- * No Referer — only session cookies + navigate Sec-Fetch metadata.
- */
-export function paheNavigateImageHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
-    "User-Agent": USER_AGENT,
-    Accept:
-      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "no-cache",
-    Pragma: "no-cache",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "sec-ch-ua": SEC_CH_UA,
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "upgrade-insecure-requests": "1",
   }
 
   const cookies = getStoredCookieHeader()
@@ -453,24 +371,6 @@ export function normalizePaheUrl(url: string): string {
     normalized = getBaseUrl() + normalized
   }
   return normalized
-}
-
-/** URLs that need session cookies / referer (posters, CDN, site assets). */
-export function isPaheProtectedUrl(url: string): boolean {
-  const normalized = normalizePaheUrl(url)
-  if (!normalized || normalized.indexOf("http") !== 0) return false
-
-  const lower = normalized.toLowerCase()
-  if (lower.indexOf("anilist.co") >= 0) return false
-  if (lower.indexOf("graphql.anilist") >= 0) return false
-  if (lower.indexOf("ibb.co") >= 0) return false
-
-  const host = hostFromBaseUrl(getBaseUrl()).toLowerCase()
-  if (lower.indexOf(host) >= 0) return true
-  if (lower.indexOf("animepahe") >= 0) return true
-  if (lower.indexOf("pahe.win") >= 0) return true
-  if (lower.indexOf("ppahe.") >= 0) return true
-  return false
 }
 
 function saveResponseCookies(response: any) {
@@ -529,7 +429,6 @@ function buildWebViewFetchScript(
   requestUrl: string,
   referer: string,
   fetchMode: string,
-  asBinary: boolean,
   fetchId: number,
   extraHeaders?: Record<string, string>
 ): string {
@@ -551,85 +450,18 @@ function buildWebViewFetchScript(
 
   const fetchHeaders = "{" + pairs.join(",") + "}"
 
-  if (!asBinary) {
-    return (
-      "(function(){fetch('" +
-      requestUrl +
-      "',{credentials:'include',headers:" +
-      fetchHeaders +
-      "}).then(function(r){return r.text().then(function(t){window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
-      String(fetchId) +
-      ",status:r.status,body:t});});})" +
-      ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
-      String(fetchId) +
-      ",status:0,body:String(e)});});})();"
-    )
-  }
-
   return (
     "(function(){fetch('" +
     requestUrl +
     "',{credentials:'include',headers:" +
     fetchHeaders +
-    "}).then(function(r){return r.arrayBuffer().then(function(buf){var u8=new Uint8Array(buf);var bin='';var step=0x8000;for(var i=0;i<u8.length;i+=step){bin+=String.fromCharCode.apply(null,u8.subarray(i,i+step));}window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
+    "}).then(function(r){return r.text().then(function(t){window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
     String(fetchId) +
-    ",status:r.status,body:btoa(bin),binary:true});});})" +
+    ",status:r.status,body:t});});})" +
     ".catch(function(e){window.webkit.messageHandlers.paheFetchDone.postMessage({id:" +
     String(fetchId) +
-    ",status:0,body:String(e),binary:true});});})();"
+    ",status:0,body:String(e)});});})();"
   )
-}
-
-/** Load a poster via <img> inside the WebView (real image request — fetch() hits CORS). */
-function buildWebViewImageScript(imageUrl: string, fetchId: number): string {
-  const safeUrl = imageUrl.replace(/\\/g, "\\\\").replace(/'/g, "\\'")
-  return (
-    "(function(){var url='" +
-    safeUrl +
-    "';var id=" +
-    String(fetchId) +
-    ";var img=new Image();img.style.cssText='position:fixed;left:-9999px;width:1px;height:1px;opacity:0;visibility:hidden;pointer-events:none;';" +
-    "img.onload=function(){try{var w=img.naturalWidth,h=img.naturalHeight;" +
-    "if(!w||!h){window.webkit.messageHandlers.paheFetchDone.postMessage({id:id,status:0,body:'zero size'});return;}" +
-    "var c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0);" +
-    "var du=c.toDataURL('image/png');" +
-    "window.webkit.messageHandlers.paheFetchDone.postMessage({id:id,status:200,body:du,dataUrl:true});" +
-    "}catch(e){window.webkit.messageHandlers.paheFetchDone.postMessage({id:id,status:0,body:String(e)});}};" +
-    "img.onerror=function(){window.webkit.messageHandlers.paheFetchDone.postMessage({id:id,status:403,body:'img error'});};" +
-    "img.src=url;})();"
-  )
-}
-
-function webViewLoadImageViaMessageHandler(
-  controller: any,
-  imageUrl: string
-): Promise<{ status: number; body: string; dataUrl?: boolean }> {
-  return new Promise(function (resolve, reject) {
-    if (!controller || !controller.evaluateJavaScript) {
-      reject(new Error("WebView evaluateJavaScript unavailable"))
-      return
-    }
-
-    const fetchId = nextWebViewFetchId++
-    pendingWebViewFetches[fetchId] = {
-      id: fetchId,
-      resolve: resolve,
-      reject: reject,
-      expectDataUrl: true,
-      requestUrl: imageUrl,
-    }
-
-    const script = buildWebViewImageScript(imageUrl, fetchId)
-    const queued = webViewJsQueue.length + (webViewJsBusy ? 1 : 0)
-    if (queued > 0) {
-      console.log(
-        "[animepaheSession] WebView img queued id=" + String(fetchId) + " pending=" + String(queued)
-      )
-    }
-
-    webViewJsQueue.push({ kind: "fetch", fetchId: fetchId, script: script })
-    pumpWebViewJsQueue(controller)
-  })
 }
 
 function webViewFetchViaMessageHandler(
@@ -637,9 +469,8 @@ function webViewFetchViaMessageHandler(
   requestUrl: string,
   referer: string,
   fetchMode: string,
-  asBinary = false,
   extraHeaders?: Record<string, string>
-): Promise<{ status: number; body: string; binary?: boolean }> {
+): Promise<{ status: number; body: string }> {
   return new Promise(function (resolve, reject) {
     if (!controller || !controller.evaluateJavaScript) {
       reject(new Error("WebView evaluateJavaScript unavailable"))
@@ -651,7 +482,6 @@ function webViewFetchViaMessageHandler(
       id: fetchId,
       resolve: resolve,
       reject: reject,
-      expectBinary: asBinary,
       requestUrl: requestUrl,
       referer: referer,
       fetchMode: fetchMode,
@@ -662,7 +492,6 @@ function webViewFetchViaMessageHandler(
       requestUrl,
       referer,
       fetchMode,
-      asBinary,
       fetchId,
       extraHeaders
     )
@@ -718,8 +547,6 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       finishWebViewFetch(controller, fetchId, {
         status: status,
         body: body,
-        binary: !!(data && data.binary),
-        dataUrl: !!(data && data.dataUrl),
       })
       return "ok"
     })
@@ -933,37 +760,7 @@ export async function webViewFetch(
   if (!webViewController) {
     throw new Error("No active WebView session")
   }
-  return webViewFetchViaMessageHandler(webViewController, requestUrl, referer, fetchMode, false)
-}
-
-/** Load poster through WebView <img> (browser image request, not fetch/XHR). */
-export async function webViewLoadImage(
-  imageUrl: string
-): Promise<{ status: number; body: string; dataUrl?: boolean }> {
-  if (!webViewController) {
-    throw new Error("No poster WebView")
-  }
-  return webViewLoadImageViaMessageHandler(webViewController, imageUrl)
-}
-
-/** Binary fetch inside the live WebView (for poster images, etc.). */
-export async function webViewFetchBinary(
-  requestUrl: string,
-  referer: string,
-  fetchMode: "cors" | "navigate" = "cors",
-  extraHeaders?: Record<string, string>
-): Promise<{ status: number; body: string; binary?: boolean }> {
-  if (!webViewController) {
-    throw new Error("No active WebView session")
-  }
-  return webViewFetchViaMessageHandler(
-    webViewController,
-    requestUrl,
-    referer,
-    fetchMode,
-    true,
-    extraHeaders
-  )
+  return webViewFetchViaMessageHandler(webViewController, requestUrl, referer, fetchMode)
 }
 
 async function probeApiStatus(
@@ -991,44 +788,6 @@ async function probeApiStatus(
 async function probeApi(baseUrl: string): Promise<boolean> {
   const result = await probeApiStatus(baseUrl)
   return result.ok
-}
-
-/** Silent WebView on animepahe.pw for poster <img> loads (never present()). */
-export async function ensurePosterWebView(baseUrl?: string): Promise<boolean> {
-  if (webViewController) return true
-  if (posterWebViewInit) return posterWebViewInit
-
-  const base = baseUrl || getBaseUrl()
-  posterWebViewInit = (async function () {
-    console.log("[animepaheSession] Starting silent poster WebView")
-    const controller = new WebViewController()
-    webViewController = controller
-
-    try {
-      await registerWebViewHandlers(controller, base)
-      await preloadStoredCookies(controller, base)
-
-      const loaded = await controller.loadURL(base + "/")
-      if (!loaded) {
-        disposeWebViewController()
-        return false
-      }
-      if (controller.waitForLoad) await controller.waitForLoad()
-
-      console.log("[animepaheSession] Poster WebView ready")
-      return true
-    } catch (err) {
-      disposeWebViewController()
-      console.log("[animepaheSession] Poster WebView failed:", err)
-      return false
-    }
-  })()
-
-  try {
-    return await posterWebViewInit
-  } finally {
-    posterWebViewInit = null
-  }
 }
 
 async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
@@ -1074,14 +833,15 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
     if (probeOk) {
       saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false)
       sessionReady = true
-      console.log("[animepaheSession] Exported cookies work with fetch(); WebView kept for posters")
+      disposeWebViewController()
+      console.log("[animepaheSession] Exported cookies work with fetch()")
       return true
     }
 
     if (webViewProbeOk) {
       saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, true)
       sessionReady = true
-      console.log("[animepaheSession] Live WebView session active — hidden background requests")
+      console.log("[animepaheSession] Live WebView session active — API via WebView")
       return true
     }
 
@@ -1113,7 +873,6 @@ async function runBootstrap(): Promise<boolean> {
   if (probe.ok) {
     sessionReady = true
     saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false)
-    await ensurePosterWebView(baseUrl)
     console.log("[animepaheSession] Boot probe HTTP", String(probe.status), "— session ready")
     return true
   }

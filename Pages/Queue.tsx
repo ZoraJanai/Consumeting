@@ -1,11 +1,11 @@
 import {
   useEffect, useState,
   List, ContentUnavailableView, Button, Text, NavigationStack,
-  HStack, VStack, Spacer, ZStack, RoundedRectangle,
+  HStack, VStack, Spacer, ZStack, RoundedRectangle, Image,
 Label
 } from "scripting"
 import { getQueue, saveQueue } from "../scripts/cache"
-import { PaheImage } from "./PaheImage"
+import { normalizePaheUrl } from "../scripts/animepaheClient"
 
 type DownloadAnime = {
   name: string
@@ -78,9 +78,8 @@ function QueueCell({ item }: { item: DownloadAnime }) {
 
   return (
     <HStack frame={{ height: 256 }}>
-      <PaheImage
-        url={item.img}
-        animeSession={item.source}
+      <Image
+        imageUrl={normalizePaheUrl(item.img)}
         aspectRatio={{ contentMode: "fit", value: 2 / 3 }}
         frame={{ height: 225 }}
         resizable
