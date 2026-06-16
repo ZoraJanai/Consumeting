@@ -33,6 +33,22 @@ function getUserAgent(): string {
   return DEFAULT_USER_AGENT
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, ms)
+  })
+}
+
+/** Resolve `promise`, but never wait longer than `ms` (returns `fallback` on timeout). */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    delay(ms).then(function () {
+      return fallback
+    }),
+  ])
+}
+
 /** Detect the device's native WebView user agent and cache it for fetch() headers. */
 async function detectDeviceUserAgent(): Promise<string> {
   const stored = loadSetting<string>(STORAGE_KEYS.ANIMEPAHE_USER_AGENT, "")
@@ -44,15 +60,14 @@ async function detectDeviceUserAgent(): Promise<string> {
   let controller: any = null
   try {
     controller = new WebViewController()
-    await controller.loadURL("about:blank")
-    if (controller.waitForLoad) {
-      try {
-        await controller.waitForLoad()
-      } catch {
-        /* ignore */
-      }
-    }
-    const ua = await controller.evaluateJavaScript("return navigator.userAgent")
+    // Bounded: never let UA detection block boot. about:blank can occasionally
+    // never fire waitForLoad on some devices.
+    await withTimeout(controller.loadURL("about:blank"), 3000, false as any)
+    const ua = await withTimeout<string>(
+      controller.evaluateJavaScript("return navigator.userAgent"),
+      3000,
+      ""
+    )
     if (ua && typeof ua === "string" && ua.trim()) {
       cachedUserAgent = ua.trim()
       saveSetting(STORAGE_KEYS.ANIMEPAHE_USER_AGENT, cachedUserAgent)
@@ -867,9 +882,10 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
     // A stale/invalid cf_clearance can make Cloudflare re-challenge forever.
     // Let the challenge run from a clean state, exactly like Safari does.
 
-    // Start navigation but do not waitForLoad before present — on a fresh WebView that
-    // resolves on about:blank and the sheet opens empty (Scripting loads after attach).
-    void loadWebViewHome(controller, baseUrl)
+    // Kick off the page load and give it a brief, bounded chance to commit before
+    // presenting, so the sheet shows the real page (or challenge) instead of blank —
+    // but never block on a slow/looping challenge.
+    await withTimeout(loadWebViewHome(controller, baseUrl), 4000, undefined)
 
     // Fully automatic verification: while the sheet is open, passively watch the page.
     // Once the challenge clears (and only then), capture cookies, confirm the API works,
