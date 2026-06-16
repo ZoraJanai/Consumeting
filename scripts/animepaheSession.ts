@@ -221,6 +221,7 @@ function clearWebViewFetchState() {
 
 function disposeWebViewController() {
   if (!webViewController) return
+  stopVerificationPoller()
   clearWebViewFetchState()
   verificationController = null
   try {
@@ -555,13 +556,21 @@ function webViewFetchViaMessageHandler(
   })
 }
 
-async function reinjectAfterNavigation(controller: any) {
+async function waitForWebViewLoad(controller: any) {
   try {
     if (controller.waitForLoad) await controller.waitForLoad()
   } catch {
     /* ignore */
   }
-  await injectContinueButton(controller)
+}
+
+let verificationPoller: ReturnType<typeof setInterval> | null = null
+
+function stopVerificationPoller() {
+  if (verificationPoller) {
+    clearInterval(verificationPoller)
+    verificationPoller = null
+  }
 }
 
 function isBlankOrWrongHost(pageUrl: string, baseUrl: string): boolean {
@@ -615,16 +624,6 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       return "ok"
     })
 
-    await controller.addScriptMessageHandler("pahePageReady", async function (pageUrl: string) {
-      //console.log("[animepaheSession] WebView navigated:", pageUrl)
-      if (isBlankOrWrongHost(pageUrl, baseUrl)) {
-        console.log("[animepaheSession] Blank or wrong host — reloading home")
-        await loadWebViewHome(controller, baseUrl)
-        return "ok"
-      }
-      await injectContinueButton(controller)
-      return "ok"
-    })
   } else {
     //console.log("[animepaheSession] addScriptMessageHandler unavailable")
   }
@@ -637,18 +636,6 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       const cookie = headers.Cookie || headers.cookie
       if (cookie) {
         saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), cookie))
-      }
-
-      const navType = request.navigationType || ""
-      const isMainDoc =
-        navType === "linkActivated" ||
-        navType === "other" ||
-        navType === "formSubmitted" ||
-        navType === "reload" ||
-        navType === "backForward"
-
-      if (isMainDoc) {
-        void reinjectAfterNavigation(controller)
       }
     }
 
@@ -685,28 +672,34 @@ async function probeApiInWebView(controller: any, baseUrl: string): Promise<bool
   }
 }
 
-async function injectContinueButton(controller: any) {
-  if (!controller.evaluateJavaScript) return
+/**
+ * Passively read the current page state — URL + whether a Cloudflare/DDoS-Guard
+ * challenge is on screen. This only READS the DOM (no mutation, no timers, no
+ * injected elements) so the challenge runs completely untouched, like Safari.
+ */
+async function readPageState(controller: any): Promise<{ href: string; challenge: boolean }> {
+  if (!controller.evaluateJavaScript) return { href: "", challenge: false }
 
   const script =
-    "(function(){function addBtn(){if(!window.webkit||!window.webkit.messageHandlers||!window.webkit.messageHandlers.paheContinue)return;" +
-    "var old=document.getElementById('pahe-continue');if(old)old.remove();" +
-    "var btn=document.createElement('button');btn.id='pahe-continue';" +
-    "btn.textContent='Continue to app';btn.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:16px 24px;font-size:17px;font-weight:600;background:#007AFF;color:#fff;border:none;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.35);';" +
-    "btn.onclick=function(){window.webkit.messageHandlers.paheContinue.postMessage('');};" +
-    "(document.body||document.documentElement).appendChild(btn);}" +
-    "function notify(){addBtn();if(window.webkit.messageHandlers.pahePageReady){try{window.webkit.messageHandlers.pahePageReady.postMessage(location.href||'');}catch(e){}}}" +
-    "if(!window.__paheNavSetup){window.__paheNavSetup=true;" +
-    "window.addEventListener('load',notify);window.addEventListener('pageshow',notify);" +
-    "if(window.__paheNavTimer){clearInterval(window.__paheNavTimer);}" +
-    "window.__paheNavTimer=setInterval(addBtn,2000);}" +
-    "notify();})();"
+    "(function(){var r={href:'',challenge:false};try{" +
+    "r.href=location.href||'';" +
+    "var t=(document.title||'').toLowerCase();" +
+    "if(t.indexOf('just a moment')>=0||t.indexOf('attention required')>=0||t.indexOf('checking your browser')>=0||t.indexOf('please wait')>=0)r.challenge=true;" +
+    "if(document.getElementById('challenge-form')||document.getElementById('cf-challenge-running')||document.getElementById('challenge-running'))r.challenge=true;" +
+    "var h=((document.documentElement&&document.documentElement.innerHTML)||'').toLowerCase().slice(0,4000);" +
+    "if(h.indexOf('cf-challenge')>=0||h.indexOf('cdn-cgi/challenge')>=0||h.indexOf('ddos-guard')>=0||h.indexOf('ddg-cookie')>=0)r.challenge=true;" +
+    "}catch(e){}return JSON.stringify(r);})()"
 
   try {
-    await enqueueWebViewScript(controller, script)
-  } catch (err) {
-    //console.log("[animepaheSession] Continue button inject failed:", err)
+    const raw = await enqueueWebViewScript(controller, "return " + script)
+    if (raw && typeof raw === "string") {
+      const parsed = JSON.parse(raw)
+      return { href: parsed.href || "", challenge: !!parsed.challenge }
+    }
+  } catch {
+    /* ignore */
   }
+  return { href: "", challenge: false }
 }
 
 async function captureCookiesFromDocument(controller: any): Promise<WebCookie[]> {
@@ -870,32 +863,51 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
   try {
     await registerWebViewHandlers(controller, baseUrl)
 
-    if (controller.addScriptMessageHandler) {
-      await controller.addScriptMessageHandler("paheContinue", async function () {
-        //console.log("[animepaheSession] Continue tapped — saving session from live WebView")
-        await saveCookiesFromWebView(controller, baseUrl)
-        webViewProbeOk = await probeApiInWebView(controller, baseUrl)
-       // console.log("[animepaheSession] WebView probe while open:", webViewProbeOk ? "ok" : "failed")
-        if (controller.dismiss) controller.dismiss()
-        return "ok"
-      })
-    }
-
-    await preloadStoredCookies(controller, baseUrl)
+    // NOTE: We deliberately do NOT seed stored cookies into the verify WebView.
+    // A stale/invalid cf_clearance can make Cloudflare re-challenge forever.
+    // Let the challenge run from a clean state, exactly like Safari does.
 
     // Start navigation but do not waitForLoad before present — on a fresh WebView that
     // resolves on about:blank and the sheet opens empty (Scripting loads after attach).
     void loadWebViewHome(controller, baseUrl)
-    await injectContinueButton(controller)
+
+    // Fully automatic verification: while the sheet is open, passively watch the page.
+    // Once the challenge clears (and only then), capture cookies, confirm the API works,
+    // and auto-dismiss — no button, no DOM tampering during the challenge.
+    stopVerificationPoller()
+    verificationPoller = setInterval(async function () {
+      try {
+        const state = await readPageState(controller)
+
+        if (isBlankOrWrongHost(state.href, baseUrl)) {
+          await loadWebViewHome(controller, baseUrl)
+          return
+        }
+
+        if (state.challenge) return // challenge still running — leave it untouched
+
+        await saveCookiesFromWebView(controller, baseUrl)
+        const ok = await probeApiInWebView(controller, baseUrl)
+        if (ok) {
+          webViewProbeOk = true
+          stopVerificationPoller()
+          if (controller.dismiss) controller.dismiss()
+        }
+      } catch {
+        /* ignore poll errors */
+      }
+    }, 2000)
 
     await controller.present({
       fullscreen: true,
-      navigationTitle: "Verify site, then tap Continue",
+      navigationTitle: "Verifying…",
     })
+
+    stopVerificationPoller()
 
     if (!webViewProbeOk) {
      // console.log("[animepaheSession] Sheet closed — probing live WebView session")
-      await reinjectAfterNavigation(controller)
+      await waitForWebViewLoad(controller)
       await saveCookiesFromWebView(controller, baseUrl)
       webViewProbeOk = await probeApiInWebView(controller, baseUrl)
     }
