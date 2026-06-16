@@ -1,4 +1,4 @@
-import { Image, useEffect, useState } from "scripting"
+import { Image, RoundedRectangle, useEffect, useState } from "scripting"
 import {
   isLocalPosterPath,
   needsPosterAuthFetch,
@@ -30,6 +30,7 @@ export function PaheImage(props: PaheImageProps) {
   const needsAuth = needsPosterAuthFetch(url)
   const [displayUrl, setDisplayUrl] = useState("")
   const [filePath, setFilePath] = useState(isLocalPosterPath(url) ? url : "")
+  const [uiImage, setUiImage] = useState<any>(null)
 
   const layout = {
     aspectRatio: props.aspectRatio,
@@ -43,36 +44,42 @@ export function PaheImage(props: PaheImageProps) {
       if (!url) {
         setDisplayUrl("")
         setFilePath("")
+        setUiImage(null)
         return
       }
 
       if (isLocalPosterPath(url)) {
         setFilePath(url)
         setDisplayUrl("")
+        setUiImage(null)
         return
       }
 
       if (url.indexOf("data:image") === 0) {
         setDisplayUrl(url)
         setFilePath("")
+        setUiImage(null)
         return
       }
 
       if (!needsAuth) {
         setDisplayUrl(url)
         setFilePath("")
+        setUiImage(null)
         return
       }
 
       let cancelled = false
       setDisplayUrl("")
       setFilePath("")
+      setUiImage(null)
 
       paheFetchImage(url, { animeSession: props.animeSession })
         .then(function (result) {
           if (cancelled || !result) return
           if (result.kind === "dataUrl") setDisplayUrl(result.url)
           if (result.kind === "file") setFilePath(result.path)
+          if (result.kind === "ui") setUiImage(result.image)
         })
         .catch(function (err) {
           if (!cancelled) console.log("[paheImage] error", String(err))
@@ -85,6 +92,9 @@ export function PaheImage(props: PaheImageProps) {
     [url, needsAuth, props.animeSession]
   )
 
+  if (uiImage) {
+    return <Image image={uiImage} {...layout} />
+  }
   if (filePath) {
     return <Image filePath={filePath} {...layout} />
   }
@@ -94,5 +104,5 @@ export function PaheImage(props: PaheImageProps) {
   if (!needsAuth && url) {
     return <Image imageUrl={url} {...layout} />
   }
-  return <Image {...layout} />
+  return <RoundedRectangle fill="tertiarySystemFill" cornerRadius={8} {...layout} />
 }
