@@ -236,7 +236,6 @@ function clearWebViewFetchState() {
 
 function disposeWebViewController() {
   if (!webViewController) return
-  stopContinueButtonPoller()
   clearWebViewFetchState()
   verificationController = null
   try {
@@ -580,24 +579,6 @@ async function reinjectAfterNavigation(controller: any) {
   await injectContinueButton(controller)
 }
 
-let continueButtonPoller: ReturnType<typeof setInterval> | null = null
-
-function startContinueButtonPoller(controller: any) {
-  stopContinueButtonPoller()
-  continueButtonPoller = setInterval(function () {
-    // injectContinueButton is idempotent and challenge-safe: it only reads the page
-    // and adds the button when no Cloudflare/DDoS-Guard challenge is present.
-    void injectContinueButton(controller)
-  }, 2000)
-}
-
-function stopContinueButtonPoller() {
-  if (continueButtonPoller) {
-    clearInterval(continueButtonPoller)
-    continueButtonPoller = null
-  }
-}
-
 function isBlankOrWrongHost(pageUrl: string, baseUrl: string): boolean {
   const url = (pageUrl || "").trim()
   if (!url || url === "about:blank") return true
@@ -722,29 +703,18 @@ async function probeApiInWebView(controller: any, baseUrl: string): Promise<bool
 async function injectContinueButton(controller: any) {
   if (!controller.evaluateJavaScript) return
 
-  // Challenge-safe: never mutate the DOM while a Cloudflare/DDoS-Guard challenge is on
-  // screen (managed challenges detect tampering and loop). Only add the button once the
-  // real site is loaded; use one-time load/pageshow listeners (no in-page setInterval).
   const script =
-    "(function(){" +
-    "function isChal(){try{" +
-    "var t=(document.title||'').toLowerCase();" +
-    "if(t.indexOf('just a moment')>=0||t.indexOf('attention required')>=0||t.indexOf('checking your browser')>=0||t.indexOf('please wait')>=0)return true;" +
-    "if(document.getElementById('challenge-form')||document.getElementById('cf-challenge-running')||document.getElementById('challenge-running'))return true;" +
-    "var h=((document.documentElement&&document.documentElement.innerHTML)||'').toLowerCase().slice(0,4000);" +
-    "if(h.indexOf('cf-challenge')>=0||h.indexOf('cdn-cgi/challenge')>=0||h.indexOf('ddos-guard')>=0||h.indexOf('ddg-cookie')>=0)return true;" +
-    "}catch(e){}return false;}" +
-    "function addBtn(){" +
-    "if(isChal())return;" +
-    "if(!window.webkit||!window.webkit.messageHandlers||!window.webkit.messageHandlers.paheContinue)return;" +
-    "if(document.getElementById('pahe-continue'))return;" +
+    "(function(){function addBtn(){if(!window.webkit||!window.webkit.messageHandlers||!window.webkit.messageHandlers.paheContinue)return;" +
+    "var old=document.getElementById('pahe-continue');if(old)old.remove();" +
     "var btn=document.createElement('button');btn.id='pahe-continue';" +
     "btn.textContent='Continue to app';btn.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:16px 24px;font-size:17px;font-weight:600;background:#007AFF;color:#fff;border:none;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.35);';" +
     "btn.onclick=function(){window.webkit.messageHandlers.paheContinue.postMessage('');};" +
     "(document.body||document.documentElement).appendChild(btn);}" +
-    "function notify(){if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.pahePageReady){try{window.webkit.messageHandlers.pahePageReady.postMessage(location.href||'');}catch(e){}}addBtn();}" +
+    "function notify(){addBtn();if(window.webkit.messageHandlers.pahePageReady){try{window.webkit.messageHandlers.pahePageReady.postMessage(location.href||'');}catch(e){}}}" +
     "if(!window.__paheNavSetup){window.__paheNavSetup=true;" +
-    "window.addEventListener('load',notify);window.addEventListener('pageshow',notify);}" +
+    "window.addEventListener('load',notify);window.addEventListener('pageshow',notify);" +
+    "if(window.__paheNavTimer){clearInterval(window.__paheNavTimer);}" +
+    "window.__paheNavTimer=setInterval(addBtn,2000);}" +
     "notify();})();"
 
   try {
@@ -930,15 +900,10 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
     void loadWebViewHome(controller, baseUrl)
     await injectContinueButton(controller)
 
-    // Native poller adds the Continue button once the challenge clears (challenge-safe).
-    startContinueButtonPoller(controller)
-
     await controller.present({
       fullscreen: true,
       navigationTitle: "Verify site, then tap Continue",
     })
-
-    stopContinueButtonPoller()
 
     if (!webViewProbeOk) {
      // console.log("[animepaheSession] Sheet closed — probing live WebView session")
