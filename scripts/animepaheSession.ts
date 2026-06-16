@@ -496,16 +496,6 @@ function webViewFetchViaMessageHandler(
       extraHeaders
     )
 
-    const queued = webViewJsQueue.length + (webViewJsBusy ? 1 : 0)
-    if (queued > 0) {
-      //console.log(
-        "[animepaheSession] WebView fetch queued id=" +
-          String(fetchId) +
-          " pending=" +
-          String(queued)
-      )
-    }
-
     webViewJsQueue.push({ kind: "fetch", fetchId: fetchId, script: script })
     pumpWebViewJsQueue(controller)
   })
