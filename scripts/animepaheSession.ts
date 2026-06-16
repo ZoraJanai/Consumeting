@@ -13,7 +13,7 @@ type WebCookie = {
 }
 
 declare const WebViewController: {
-  new (options?: { ephemeral?: boolean }): any
+  new (): any
 }
 
 /** Fallback UA if device detection hasn't run yet. */
@@ -236,7 +236,6 @@ function clearWebViewFetchState() {
 
 function disposeWebViewController() {
   if (!webViewController) return
-  stopVerificationPoller()
   clearWebViewFetchState()
   verificationController = null
   try {
@@ -571,13 +570,13 @@ function webViewFetchViaMessageHandler(
   })
 }
 
-let verificationPoller: ReturnType<typeof setInterval> | null = null
-
-function stopVerificationPoller() {
-  if (verificationPoller) {
-    clearInterval(verificationPoller)
-    verificationPoller = null
+async function reinjectAfterNavigation(controller: any) {
+  try {
+    if (controller.waitForLoad) await controller.waitForLoad()
+  } catch {
+    /* ignore */
   }
+  await injectContinueButton(controller)
 }
 
 function isBlankOrWrongHost(pageUrl: string, baseUrl: string): boolean {
@@ -630,13 +629,21 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       })
       return "ok"
     })
+
+    await controller.addScriptMessageHandler("pahePageReady", async function (pageUrl: string) {
+      //console.log("[animepaheSession] WebView navigated:", pageUrl)
+      if (isBlankOrWrongHost(pageUrl, baseUrl)) {
+        console.log("[animepaheSession] Blank or wrong host — reloading home")
+        await loadWebViewHome(controller, baseUrl)
+        return "ok"
+      }
+      await injectContinueButton(controller)
+      return "ok"
+    })
   } else {
     //console.log("[animepaheSession] addScriptMessageHandler unavailable")
   }
 
-  // Passively capture cookies from outgoing requests. We do NOT inject anything
-  // into the page — a clean, untouched WebView passes Cloudflare exactly like the
-  // iOS Shortcuts WebView does.
   controller.shouldAllowRequest = async function (request: any) {
     if (!request || !request.url) return true
 
@@ -645,6 +652,18 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       const cookie = headers.Cookie || headers.cookie
       if (cookie) {
         saveCookieHeader(mergeCookieHeaders(getStoredCookieHeader(), cookie))
+      }
+
+      const navType = request.navigationType || ""
+      const isMainDoc =
+        navType === "linkActivated" ||
+        navType === "other" ||
+        navType === "formSubmitted" ||
+        navType === "reload" ||
+        navType === "backForward"
+
+      if (isMainDoc) {
+        void reinjectAfterNavigation(controller)
       }
     }
 
@@ -678,6 +697,30 @@ async function probeApiInWebView(controller: any, baseUrl: string): Promise<bool
   } catch (err) {
     //console.log("[animepaheSession] WebView probe failed:", err)
     return false
+  }
+}
+
+async function injectContinueButton(controller: any) {
+  if (!controller.evaluateJavaScript) return
+
+  const script =
+    "(function(){function addBtn(){if(!window.webkit||!window.webkit.messageHandlers||!window.webkit.messageHandlers.paheContinue)return;" +
+    "var old=document.getElementById('pahe-continue');if(old)old.remove();" +
+    "var btn=document.createElement('button');btn.id='pahe-continue';" +
+    "btn.textContent='Continue to app';btn.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:16px 24px;font-size:17px;font-weight:600;background:#007AFF;color:#fff;border:none;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.35);';" +
+    "btn.onclick=function(){window.webkit.messageHandlers.paheContinue.postMessage('');};" +
+    "(document.body||document.documentElement).appendChild(btn);}" +
+    "function notify(){addBtn();if(window.webkit.messageHandlers.pahePageReady){try{window.webkit.messageHandlers.pahePageReady.postMessage(location.href||'');}catch(e){}}}" +
+    "if(!window.__paheNavSetup){window.__paheNavSetup=true;" +
+    "window.addEventListener('load',notify);window.addEventListener('pageshow',notify);" +
+    "if(window.__paheNavTimer){clearInterval(window.__paheNavTimer);}" +
+    "window.__paheNavTimer=setInterval(addBtn,2000);}" +
+    "notify();})();"
+
+  try {
+    await enqueueWebViewScript(controller, script)
+  } catch (err) {
+    //console.log("[animepaheSession] Continue button inject failed:", err)
   }
 }
 
@@ -833,63 +876,38 @@ async function probeApi(baseUrl: string): Promise<boolean> {
 
 async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
   disposeWebViewController()
-  // Clean-slate WebView, like the iOS Shortcuts WebView that passes Cloudflare on the
-  // first try: isolated cookie jar (no stale cf_clearance) and we inject NOTHING into
-  // the page, so the challenge runs completely untouched.
-  const controller = new WebViewController({ ephemeral: true })
+  const controller = new WebViewController()
   webViewController = controller
   verificationController = controller
 
   let webViewProbeOk = false
-  let done = false
 
   try {
     await registerWebViewHandlers(controller, baseUrl)
 
-    void loadWebViewHome(controller, baseUrl)
-
-    // Detect completion natively via getHTML() — no JS injection. While the Cloudflare
-    // challenge is on screen we leave it alone; once the real page is loaded we capture
-    // cookies, confirm the API works, and auto-dismiss.
-    stopVerificationPoller()
-    let polling = false
-    verificationPoller = setInterval(async function () {
-      if (polling || done) return
-      polling = true
-      try {
-        let html = ""
-        try {
-          html = await controller.getHTML()
-        } catch {
-          html = ""
-        }
-        if (!html) return // still loading / sandboxed — leave it untouched
-        if (isChallengePage(html)) return // challenge still running — do not touch
-
+    if (controller.addScriptMessageHandler) {
+      await controller.addScriptMessageHandler("paheContinue", async function () {
+        //console.log("[animepaheSession] Continue tapped — saving session from live WebView")
         await saveCookiesFromWebView(controller, baseUrl)
-        const ok = await probeApiInWebView(controller, baseUrl)
-        if (ok) {
-          done = true
-          webViewProbeOk = true
-          stopVerificationPoller()
-          if (controller.dismiss) controller.dismiss()
-        }
-      } catch {
-        /* ignore poll errors */
-      } finally {
-        polling = false
-      }
-    }, 2000)
+        webViewProbeOk = await probeApiInWebView(controller, baseUrl)
+        if (controller.dismiss) controller.dismiss()
+        return "ok"
+      })
+    }
+
+    // Start navigation but do not waitForLoad before present — on a fresh WebView that
+    // resolves on about:blank and the sheet opens empty (Scripting loads after attach).
+    void loadWebViewHome(controller, baseUrl)
+    await injectContinueButton(controller)
 
     await controller.present({
       fullscreen: true,
-      navigationTitle: "Verifying…",
+      navigationTitle: "Verify site, then tap Continue",
     })
-
-    stopVerificationPoller()
 
     if (!webViewProbeOk) {
      // console.log("[animepaheSession] Sheet closed — probing live WebView session")
+      await reinjectAfterNavigation(controller)
       await saveCookiesFromWebView(controller, baseUrl)
       webViewProbeOk = await probeApiInWebView(controller, baseUrl)
     }
