@@ -34,6 +34,7 @@ declare const Data: {
 }
 
 declare const FileManager: {
+  documentsDirectory: string
   temporaryDirectory: string
   createDirectory(path: string, recursive?: boolean): Promise<void>
   writeAsData(path: string, data: any): Promise<void>
@@ -97,6 +98,35 @@ function bytesToTextPreview(bytes: Uint8Array, max = 120): string {
 const imageCache: Record<string, any> = {}
 const imageFileCache: Record<string, string> = {}
 const imageInflight: Record<string, Promise<PaheImageLoad | null>> = {}
+let posterWebViewChain: Promise<unknown> = Promise.resolve()
+
+export function isLocalPosterPath(url: string): boolean {
+  if (!url) return false
+  return url.indexOf("http") !== 0 && url.indexOf("//") !== 0
+}
+
+function posterCacheDir(): string {
+  return FileManager.documentsDirectory + "/Consumeting/posters/"
+}
+
+function posterDiskPath(url: string, mimeType?: string): string {
+  return posterCacheDir() + hashUrl(url) + imageExtFromUrl(url, mimeType)
+}
+
+async function getPosterDiskPath(url: string): Promise<string | null> {
+  const key = imageCacheKey(url)
+  if (!key || isLocalPosterPath(key)) return isLocalPosterPath(key) ? key : null
+  const path = posterDiskPath(key)
+  try {
+    if (await FileManager.exists(path)) {
+      imageFileCache[key] = path
+      return path
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
 
 export type PaheImageLoad =
   | { kind: "ui"; image: any }
@@ -437,9 +467,9 @@ async function readImageBody(response: any): Promise<{ data: any | null; bytes: 
 
 async function saveImageDataToCache(url: string, data: any, bytes: Uint8Array | null, mimeType?: string): Promise<string | null> {
   try {
-    const dir = FileManager.temporaryDirectory + "/pahe-images/"
+    const dir = posterCacheDir()
     await FileManager.createDirectory(dir, true)
-    const path = dir + hashUrl(url) + imageExtFromUrl(url, mimeType)
+    const path = posterDiskPath(url, mimeType)
 
     if (data) {
       await FileManager.writeAsData(path, data)
@@ -514,11 +544,16 @@ function bodyLooksLikeHtml(body: string): boolean {
   return sample.indexOf("<!doctype") >= 0 || sample.indexOf("<html") >= 0
 }
 
-/** Fetch image bytes with the same session headers as API calls. */
+/** Fetch image bytes with session headers; caches WebP to disk for cache/queue/search. */
 export async function paheFetchImage(
   url: string,
   opts?: { animeSession?: string }
 ): Promise<PaheImageLoad | null> {
+  if (isLocalPosterPath(url)) {
+    logPaheImage("local", "using saved path", url)
+    return { kind: "file", path: url }
+  }
+
   const key = imageCacheKey(url)
   logPaheImage(
     "start",
@@ -539,6 +574,13 @@ export async function paheFetchImage(
     logPaheImage("cache-hit", "file " + imageFileCache[key])
     return { kind: "file", path: imageFileCache[key] }
   }
+
+  const diskPath = await getPosterDiskPath(key)
+  if (diskPath) {
+    logPaheImage("disk-hit", diskPath)
+    return { kind: "file", path: diskPath }
+  }
+
   if (imageInflight[key]) {
     logPaheImage("queue", "waiting for in-flight fetch")
     return imageInflight[key]
@@ -664,6 +706,19 @@ async function fetchImageViaWebView(
   }
 }
 
+async function fetchImageViaWebViewQueued(
+  url: string,
+  animeSession?: string
+): Promise<ImageFetchResult> {
+  const next = posterWebViewChain.then(function () {
+    return fetchImageViaWebView(url, animeSession)
+  })
+  posterWebViewChain = next.catch(function () {
+    return undefined
+  })
+  return next
+}
+
 async function resultToImageLoad(url: string, result: ImageFetchResult): Promise<PaheImageLoad | null> {
   if (!result.ok || !result.bytes) return null
   return decodeImageDataToLoad(url, result.data, result.bytes, result.mimeType)
@@ -676,6 +731,7 @@ async function paheFetchImageInternal(
   const lower = url.toLowerCase()
   if (
     !url ||
+    isLocalPosterPath(url) ||
     url.indexOf("http") !== 0 ||
     lower.indexOf("anilist.co") >= 0 ||
     lower.indexOf("graphql.anilist") >= 0 ||
@@ -695,24 +751,23 @@ async function paheFetchImageInternal(
     headerSummary(headers)
   )
 
-  let result = await fetchImageWithHeaders(url, headers, "imageHeaders")
+  let result: ImageFetchResult
 
-  if (
-    !result.ok &&
-    isWebViewSessionActive() &&
-    (result.status === 403 || result.status === 503 || result.challenge || result.status === 0)
-  ) {
-    logPaheImage("webview", "native failed, trying queue", "status=" + String(result.status))
-    result = await fetchImageViaWebView(url, opts?.animeSession)
+  if (isWebViewSessionActive()) {
+    logPaheImage("webview", "using WebView jar (HttpOnly cookies)", url.slice(0, 80))
+    result = await fetchImageViaWebViewQueued(url, opts?.animeSession)
+  } else {
+    result = await fetchImageWithHeaders(url, headers, "imageHeaders")
   }
 
   if (!result.ok && (result.status === 403 || result.status === 503 || result.challenge)) {
     logPaheImage("retry", "refresh session", "status=" + String(result.status))
     await bootstrapAnimepaheSession()
-    const retryHeaders = paheImageHeaders(url, { animeSession: opts?.animeSession })
-    result = await fetchImageWithHeaders(url, retryHeaders, "retry")
-    if (!result.ok && isWebViewSessionActive()) {
-      result = await fetchImageViaWebView(url, opts?.animeSession)
+    if (isWebViewSessionActive()) {
+      result = await fetchImageViaWebViewQueued(url, opts?.animeSession)
+    } else {
+      const retryHeaders = paheImageHeaders(url, { animeSession: opts?.animeSession })
+      result = await fetchImageWithHeaders(url, retryHeaders, "retry")
     }
   }
 
@@ -729,6 +784,31 @@ async function paheFetchImageInternal(
     logPaheImage("fail", "decode failed", url.slice(0, 80))
   }
   return load
+}
+
+/** Download poster to disk and replace img with local path (for cache/queue). */
+export async function cachePosterForAnime<T extends { img?: string; id?: string; source?: string }>(
+  anime: T
+): Promise<T> {
+  const url = anime.img
+  if (!url || isLocalPosterPath(url) || url.indexOf("http") !== 0) return anime
+  const session = anime.id || anime.source
+  const loaded = await paheFetchImage(url, { animeSession: session })
+  if (loaded && loaded.kind === "file") {
+    return { ...anime, img: loaded.path }
+  }
+  return anime
+}
+
+/** Prefetch posters one at a time (avoids WebView fetch collisions). */
+export async function prefetchPahePosters(
+  items: { url: string; session?: string }[]
+): Promise<void> {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    if (!item.url || isLocalPosterPath(item.url) || item.url.indexOf("http") !== 0) continue
+    await paheFetchImage(item.url, { animeSession: item.session })
+  }
 }
 
 export { bootstrapAnimepaheSession, ensureAnimepaheSession, isPaheProtectedUrl, normalizePaheUrl, paheHeaders, paheImageHeaders, paheAnimeReferer, paheResourceHeaders }

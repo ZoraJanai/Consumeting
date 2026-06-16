@@ -6,6 +6,7 @@ import {
 import { NumberInputSheet } from "./numberPopout"
 import { getInfoAnilist, getInfoAnimepahe } from "../scripts/search"
 import { PaheImage } from "./PaheImage"
+import { cachePosterForAnime } from "../scripts/animepaheClient"
 import { downloadEpisode, episodeNumber, getEpisode, QualitiesOrder } from "../scripts/episode"
 import { getCache, getQueue, saveCache, saveQueue, addCache, addQueue } from "../scripts/cache"
 import { hideOverlay, showOverlay } from "./Loading"
@@ -72,6 +73,7 @@ export async function chosenAnime(anime: Anime) {
   if (anime.source.includes("-")) {
     console.log('[chosenAnime] Source contains "-", calling getInfoAnimepahe');
     info = await getInfoAnimepahe(anime)
+    info = await cachePosterForAnime(info)
     console.log('[chosenAnime] getInfoAnimepahe returned');
   } else {
     console.log('[chosenAnime] Source is numeric, calling getInfoAnilist');
@@ -328,7 +330,7 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
         name: info.name,
         source: info.id,
         episodes: `0/${info.total}`,
-        img: anime.img,
+        img: info.img || anime.img,
         isUnread: true
       }
       console.log('[animeInfo] Adding to cache:', cacheEntry);

@@ -419,6 +419,9 @@ export function playPageHeaders(sessionId: string): Record<string, string> {
 export function normalizePaheUrl(url: string): string {
   if (!url) return ""
   let normalized = url.trim()
+  if (normalized.indexOf("http") !== 0 && normalized.indexOf("//") !== 0) {
+    return normalized
+  }
   if (normalized.indexOf("//") === 0) normalized = "https:" + normalized
   if (normalized.indexOf("/") === 0 && normalized.indexOf("//") !== 0) {
     normalized = getBaseUrl() + normalized
@@ -870,16 +873,31 @@ export async function webViewFetchBinary(
   )
 }
 
-async function probeApi(baseUrl: string): Promise<boolean> {
+async function probeApiStatus(
+  baseUrl: string
+): Promise<{ ok: boolean; status: number; reason?: string }> {
   const probeUrl = baseUrl + "/api?m=search&q=" + encodeURIComponent("a")
   try {
     const response = await fetch(probeUrl, { headers: apiHeaders() })
     const body = await response.text()
     saveResponseCookies(response)
-    return response.ok && isLikelyJsonApi(body) && !isChallengePage(body)
-  } catch {
-    return false
+
+    if (response.status === 403 || response.status === 503) {
+      return { ok: false, status: response.status, reason: "blocked" }
+    }
+    if (isChallengePage(body)) {
+      return { ok: false, status: response.status, reason: "challenge" }
+    }
+    const ok = response.ok && isLikelyJsonApi(body)
+    return { ok: ok, status: response.status }
+  } catch (err) {
+    return { ok: false, status: 0, reason: String(err) }
   }
+}
+
+async function probeApi(baseUrl: string): Promise<boolean> {
+  const result = await probeApiStatus(baseUrl)
+  return result.ok
 }
 
 async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
@@ -955,19 +973,33 @@ async function runBootstrap(): Promise<boolean> {
   const baseUrl = getBaseUrl()
   console.log("[animepaheSession] Bootstrapping session for", baseUrl)
 
-  if (getStoredCookieHeader()) {
-    const missing = missingSessionCookies(getStoredCookieHeader())
+  if (loadSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false) && !webViewController) {
+    saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false)
+    console.log("[animepaheSession] Cleared stale WebView session flag")
+  }
+
+  const cookieHeader = getStoredCookieHeader()
+  if (cookieHeader) {
+    const missing = missingSessionCookies(cookieHeader)
     if (missing.length) {
       console.log("[animepaheSession] Stored cookies missing:", missing.join(", "))
     }
 
-    const cachedOk = await probeApi(baseUrl)
-    if (cachedOk) {
+    const probe = await probeApiStatus(baseUrl)
+    if (probe.ok) {
       sessionReady = true
-      console.log("[animepaheSession] Reused stored cookies")
+      saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false)
+      console.log("[animepaheSession] Boot probe HTTP", String(probe.status), "— session ready")
       return true
     }
-    console.log("[animepaheSession] Stored cookies rejected by API probe")
+    console.log(
+      "[animepaheSession] Boot probe HTTP",
+      String(probe.status),
+      probe.reason || "",
+      "— opening verification"
+    )
+  } else {
+    console.log("[animepaheSession] No stored cookies — opening verification")
   }
 
   console.log("[animepaheSession] Opening verification sheet")

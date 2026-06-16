@@ -1,9 +1,8 @@
 import { Image, useEffect, useState } from "scripting"
-import { normalizePaheUrl, paheFetchImage } from "../scripts/animepaheClient"
+import { isLocalPosterPath, normalizePaheUrl, paheFetchImage } from "../scripts/animepaheClient"
 
 type PaheImageProps = {
   url: string
-  /** Animepahe session id — sets Referer to /anime/{session} like Chrome. */
   animeSession?: string
   aspectRatio?: { contentMode: string; value: number }
   frame?: Record<string, any>
@@ -11,29 +10,34 @@ type PaheImageProps = {
   padding?: number
 }
 
-function isExternalImage(url: string): boolean {
+function isRemotePahePoster(url: string): boolean {
   if (!url || url.indexOf("http") !== 0) return false
   const lower = url.toLowerCase()
   return lower.indexOf("anilist.co") < 0 && lower.indexOf("ibb.co") < 0
 }
 
-/** Poster with session headers when needed. WebP posters use filePath (UIImage is PNG/JPEG only). */
 export function PaheImage(props: PaheImageProps) {
   const rawUrl = props.url
   const url = normalizePaheUrl(rawUrl)
-  const needsAuth = isExternalImage(url)
+  const isLocal = isLocalPosterPath(url)
+  const needsFetch = isRemotePahePoster(url)
   const [uiImage, setUiImage] = useState<any>(null)
-  const [filePath, setFilePath] = useState("")
+  const [filePath, setFilePath] = useState(isLocal ? url : "")
 
   useEffect(
     function () {
       let cancelled = false
       setUiImage(null)
-      setFilePath("")
+      setFilePath(isLocal ? url : "")
 
       if (!url) return
 
-      if (!needsAuth) {
+      if (isLocal) {
+        console.log("[paheImage] local file", url)
+        return
+      }
+
+      if (!needsFetch) {
         console.log("[paheImage] direct url", url.slice(0, 80))
         return
       }
@@ -44,10 +48,8 @@ export function PaheImage(props: PaheImageProps) {
         .then(function (result) {
           if (cancelled || !result) return
           if (result.kind === "ui") {
-            console.log("[paheImage] display ui image", url.slice(0, 80))
             setUiImage(result.image)
           } else if (result.kind === "file") {
-            console.log("[paheImage] display file", result.path)
             setFilePath(result.path)
           }
         })
@@ -59,7 +61,7 @@ export function PaheImage(props: PaheImageProps) {
         cancelled = true
       }
     },
-    [rawUrl, url, needsAuth, props.animeSession]
+    [rawUrl, url, isLocal, needsFetch, props.animeSession]
   )
 
   return (
