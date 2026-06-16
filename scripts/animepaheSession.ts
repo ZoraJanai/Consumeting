@@ -520,6 +520,26 @@ async function reinjectAfterNavigation(controller: any) {
   await injectContinueButton(controller)
 }
 
+function isBlankOrWrongHost(pageUrl: string, baseUrl: string): boolean {
+  const url = (pageUrl || "").trim()
+  if (!url || url === "about:blank") return true
+  const host = hostFromBaseUrl(baseUrl)
+  return url.indexOf(host) < 0
+}
+
+async function loadWebViewHome(controller: any, baseUrl: string): Promise<void> {
+  const homeUrl = baseUrl + "/"
+  console.log("[animepaheSession] Loading WebView home:", homeUrl)
+  try {
+    const loaded = await controller.loadURL(homeUrl)
+    if (loaded === false) {
+      console.log("[animepaheSession] loadURL returned false for", homeUrl)
+    }
+  } catch (err) {
+    console.log("[animepaheSession] loadURL failed:", err)
+  }
+}
+
 async function registerWebViewHandlers(controller: any, baseUrl: string) {
   const host = hostFromBaseUrl(baseUrl)
 
@@ -553,6 +573,11 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
 
     await controller.addScriptMessageHandler("pahePageReady", async function (pageUrl: string) {
       console.log("[animepaheSession] WebView navigated:", pageUrl)
+      if (isBlankOrWrongHost(pageUrl, baseUrl)) {
+        console.log("[animepaheSession] Blank or wrong host — reloading home")
+        await loadWebViewHome(controller, baseUrl)
+        return "ok"
+      }
       await injectContinueButton(controller)
       return "ok"
     })
@@ -813,8 +838,10 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
     }
 
     await preloadStoredCookies(controller, baseUrl)
-    await controller.loadURL(baseUrl + "/")
-    if (controller.waitForLoad) await controller.waitForLoad()
+
+    // Start navigation but do not waitForLoad before present — on a fresh WebView that
+    // resolves on about:blank and the sheet opens empty (Scripting loads after attach).
+    void loadWebViewHome(controller, baseUrl)
     await injectContinueButton(controller)
 
     await controller.present({

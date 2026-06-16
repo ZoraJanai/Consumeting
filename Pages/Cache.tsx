@@ -20,6 +20,7 @@ type Anime = {
   episodes: string
   img: string
   isUnread: boolean
+  paheID?: string
 }
 
 export type DownloadAnime = {
@@ -163,6 +164,11 @@ export function AnimeCell({
             <Text multilineTextAlignment="leading" foregroundStyle="lightGray" fontWeight="light">
               {anime.source}
             </Text>
+            {anime.paheID ? (
+              <Text multilineTextAlignment="leading" foregroundStyle="lightGray" fontWeight="light">
+                paheID: {anime.paheID}
+              </Text>
+            ) : null}
             <HStack>
               
             {anime.episodes !== "0"

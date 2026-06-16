@@ -3,7 +3,7 @@ import {
   VStack, useEffect, useState
 } from "scripting"
 import { AnimeCell, chosenAnime } from "./Cache"
-import { searchAnilist, searchAnimepahe } from "../scripts/search"
+import { enhanceAnimepaheResultsWithExternalImages, searchAnilist, searchAnimepahe } from "../scripts/search"
 import { NumberInputSheet } from "./numberPopout"
 import { STORAGE_KEYS, loadSetting, saveSetting } from "./Settings"
 import { QualitiesOrder, downloadEpisode, episodeNumber, getEpisode } from "../scripts/episode"
@@ -25,6 +25,7 @@ type Anime = {
   episodes: string
   img: string
   isUnread: boolean
+  paheID?: string
 }
 
 export type DownloadAnimeType = {
@@ -217,7 +218,14 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
           : await searchAnimepahe(q.toLowerCase())
 
         if (cancelled) return
-        setResults(typeof raw === "string" ? [] : (raw as Anime[]))
+        const baseResults = typeof raw === "string" ? [] : (raw as Anime[])
+        setResults(baseResults)
+
+        // If searching Animepahe, upgrade posters using AniList/MAL IDs from /a/{paheID}.
+        if (provider === "Animepahe" && baseResults.length) {
+          const enhanced = await enhanceAnimepaheResultsWithExternalImages(baseResults as any)
+          if (!cancelled) setResults(enhanced as any)
+        }
         setHasSearched(true)
       } catch {
         if (!cancelled) setResults([])

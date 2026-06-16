@@ -1,5 +1,5 @@
 import { fetch } from "scripting"
-import { paheFetchAllEpisodes, paheSearch } from "./animepaheClient"
+import { paheFetchAllEpisodes, paheFetchAnimeMainPageById, paheSearch } from "./animepaheClient"
 import { normalizePaheUrl } from "./animepaheSession"
 
 // Type definitions
@@ -9,6 +9,7 @@ type Anime = {
   episodes: string
   img: string
   isUnread: boolean
+  paheID?: string
   ids?: { number: number; id: string; isWatched?: boolean }[]
   id?: string
   description?: string
@@ -137,6 +138,7 @@ const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
       episodes: "0",
       img: normalizePaheUrl(item.poster),
       isUnread: false,
+      paheID: item.id != null ? String(item.id) : undefined,
     }));
 
     if (output.length > 0) {
@@ -150,6 +152,134 @@ const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
     console.error('[searchAnimepahe] ERROR:', error);
     throw error;
   }
+}
+
+function pickFirstMatch(html: string, patterns: RegExp[]): string | null {
+  for (let i = 0; i < patterns.length; i++) {
+    const m = html.match(patterns[i])
+    if (m && m[1]) return m[1]
+  }
+  return null
+}
+
+function extractAniListIdFromPaheHtml(html: string): string | null {
+  const sample = html.slice(0, 200_000)
+  return pickFirstMatch(sample, [
+    /<meta[^>]+name=["']anilist["'][^>]+content=["'](\d+)["'][^>]*>/i,
+    /<meta[^>]+content=["'](\d+)["'][^>]+name=["']anilist["'][^>]*>/i,
+  ])
+}
+
+function extractMalIdFromPaheHtml(html: string): string | null {
+  const sample = html.slice(0, 200_000)
+  return pickFirstMatch(sample, [
+    /<meta[^>]+name=["']mal["'][^>]+content=["'](\d+)["'][^>]*>/i,
+    /<meta[^>]+name=["']myanimelist["'][^>]+content=["'](\d+)["'][^>]*>/i,
+    /<meta[^>]+content=["'](\d+)["'][^>]+name=["']mal["'][^>]*>/i,
+    /<meta[^>]+content=["'](\d+)["'][^>]+name=["']myanimelist["'][^>]*>/i,
+  ])
+}
+
+async function fetchAniListCover(anilistId: string): Promise<string | null> {
+  try {
+    const requestData = anilistInfoQuery(anilistId)
+    const response = await fetch(anilistGraphqlUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(requestData),
+    })
+
+    if (!response.ok) return null
+    const data = await response.json()
+    const media = data?.data?.Media
+    const cover = media?.coverImage?.large || media?.coverImage?.medium
+    return cover ? String(cover) : null
+  } catch {
+    return null
+  }
+}
+
+async function fetchMalCover(malId: string): Promise<string | null> {
+  try {
+    const response = await fetch("https://api.jikan.moe/v4/anime/" + encodeURIComponent(malId))
+    if (!response.ok) return null
+    const data = await response.json()
+    const img =
+      data?.data?.images?.jpg?.large_image_url ||
+      data?.data?.images?.webp?.large_image_url ||
+      data?.data?.images?.jpg?.image_url ||
+      data?.data?.images?.webp?.image_url
+    return img ? String(img) : null
+  } catch {
+    return null
+  }
+}
+
+async function resolveExternalCoverFromPaheId(paheID: string): Promise<string | null> {
+  const html = await paheFetchAnimeMainPageById(paheID)
+  const anilist = extractAniListIdFromPaheHtml(html)
+  if (anilist) {
+    const cover = await fetchAniListCover(anilist)
+    if (cover) return cover
+  }
+  const mal = extractMalIdFromPaheHtml(html)
+  if (mal) {
+    const cover = await fetchMalCover(mal)
+    if (cover) return cover
+  }
+  return null
+}
+
+async function asyncPool<T>(
+  poolLimit: number,
+  items: T[],
+  iteratorFn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  const executing = new Set<Promise<void>>()
+  for (let i = 0; i < items.length; i++) {
+    const p = Promise.resolve()
+      .then(() => iteratorFn(items[i], i))
+      .catch(function () {
+        /* ignore per-item */
+      })
+      .finally(function () {
+        executing.delete(p)
+      })
+
+    executing.add(p)
+    if (executing.size >= poolLimit) {
+      await Promise.race(executing)
+    }
+  }
+
+  await Promise.allSettled(Array.from(executing))
+}
+
+/** Replace Animepahe posters with AniList/MAL cover images (prefer AniList). */
+export async function enhanceAnimepaheResultsWithExternalImages(list: Anime[]): Promise<Anime[]> {
+  const out = list.slice()
+  const targets = out
+    .map((a, idx) => ({ a, idx }))
+    .filter(x => !!x.a.paheID)
+
+  // Limit concurrency to avoid rate limits.
+  await asyncPool(3, targets, async function (t) {
+    const paheID = t.a.paheID
+    if (!paheID) return
+    try {
+      const cover = await resolveExternalCoverFromPaheId(paheID)
+      if (cover) {
+        out[t.idx] = { ...t.a, img: cover }
+      }
+    } catch {
+      /* ignore per-item failures */
+    }
+  })
+
+  return out
 }
 
 // Get anime info from Anilist with Animepahe episodes

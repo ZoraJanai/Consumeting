@@ -13,6 +13,7 @@ export type Anime = {
   episodes: string
   img: string
   isUnread: boolean
+  paheID?: string
 }
 
 export type DownloadAnime = {
@@ -22,6 +23,7 @@ export type DownloadAnime = {
   img: string
   links: string[]
   isUnread: boolean
+  paheID?: string
 }
 
 // Get unified file path (single file for both cache and queue)

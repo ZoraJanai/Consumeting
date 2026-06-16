@@ -20,6 +20,7 @@ type Anime = {
   episodes: string
   img: string
   isUnread: boolean
+  paheID?: string
 }
 
 export type QualityMap = Record<string, string>
@@ -40,6 +41,7 @@ export type DownloadAnime = {
   img: string
   links: string[]
   isUnread: boolean
+  paheID?: string
 }
 
 // ---- Defaults & Storage Keys ----

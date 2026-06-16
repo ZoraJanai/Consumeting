@@ -9,6 +9,7 @@ import {
   isChallengePage,
   isLikelyJsonApi,
   isWebViewSessionActive,
+  paheHeaders,
   mergeCookieHeaders,
   normalizePaheUrl,
   playPageHeaders,
@@ -131,12 +132,12 @@ function cleanSearchQuery(query: string): string {
 
 export async function paheSearch(
   query: string
-): Promise<{ title: string; session: string; poster: string }[]> {
+): Promise<{ title: string; session: string; poster: string; id?: string | number }[]> {
   const cleanQuery = cleanSearchQuery(query)
   const encodedQuery = encodeURIComponent(cleanQuery)
 
   if (useApiMode()) {
-    const data = await apiGet<{ data: { title: string; session: string; poster: string }[] }>(
+    const data = await apiGet<{ data: { title: string; session: string; poster: string; id?: string | number }[] }>(
       "/api/search?q=" + encodedQuery
     )
     return data.data ?? []
@@ -150,8 +151,21 @@ export async function paheSearch(
       title: item.title,
       session: item.session,
       poster: item.poster,
+      id: item.id,
     }
   })
+}
+
+/** Fetch animepahe main page HTML for a numeric paheID: https://{base}/a/{paheID} */
+export async function paheFetchAnimeMainPageById(paheId: string | number): Promise<string> {
+  const baseUrl = getBaseUrl()
+  const requestUrl = baseUrl + "/a/" + String(paheId)
+  return directFetch(
+    requestUrl,
+    paheHeaders({ referer: baseUrl + "/", mode: "navigate", requestUrl: requestUrl }),
+    false,
+    false
+  )
 }
 
 export async function paheFetchEpisodesPage(
