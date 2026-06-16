@@ -13,7 +13,7 @@ type WebCookie = {
 }
 
 declare const WebViewController: {
-  new (): any
+  new (options?: { ephemeral?: boolean }): any
 }
 
 /** Fallback UA if device detection hasn't run yet. */
@@ -571,14 +571,6 @@ function webViewFetchViaMessageHandler(
   })
 }
 
-async function waitForWebViewLoad(controller: any) {
-  try {
-    if (controller.waitForLoad) await controller.waitForLoad()
-  } catch {
-    /* ignore */
-  }
-}
-
 let verificationPoller: ReturnType<typeof setInterval> | null = null
 
 function stopVerificationPoller() {
@@ -638,11 +630,13 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       })
       return "ok"
     })
-
   } else {
     //console.log("[animepaheSession] addScriptMessageHandler unavailable")
   }
 
+  // Passively capture cookies from outgoing requests. We do NOT inject anything
+  // into the page — a clean, untouched WebView passes Cloudflare exactly like the
+  // iOS Shortcuts WebView does.
   controller.shouldAllowRequest = async function (request: any) {
     if (!request || !request.url) return true
 
@@ -685,36 +679,6 @@ async function probeApiInWebView(controller: any, baseUrl: string): Promise<bool
     //console.log("[animepaheSession] WebView probe failed:", err)
     return false
   }
-}
-
-/**
- * Passively read the current page state — URL + whether a Cloudflare/DDoS-Guard
- * challenge is on screen. This only READS the DOM (no mutation, no timers, no
- * injected elements) so the challenge runs completely untouched, like Safari.
- */
-async function readPageState(controller: any): Promise<{ href: string; challenge: boolean }> {
-  if (!controller.evaluateJavaScript) return { href: "", challenge: false }
-
-  const script =
-    "(function(){var r={href:'',challenge:false};try{" +
-    "r.href=location.href||'';" +
-    "var t=(document.title||'').toLowerCase();" +
-    "if(t.indexOf('just a moment')>=0||t.indexOf('attention required')>=0||t.indexOf('checking your browser')>=0||t.indexOf('please wait')>=0)r.challenge=true;" +
-    "if(document.getElementById('challenge-form')||document.getElementById('cf-challenge-running')||document.getElementById('challenge-running'))r.challenge=true;" +
-    "var h=((document.documentElement&&document.documentElement.innerHTML)||'').toLowerCase().slice(0,4000);" +
-    "if(h.indexOf('cf-challenge')>=0||h.indexOf('cdn-cgi/challenge')>=0||h.indexOf('ddos-guard')>=0||h.indexOf('ddg-cookie')>=0)r.challenge=true;" +
-    "}catch(e){}return JSON.stringify(r);})()"
-
-  try {
-    const raw = await enqueueWebViewScript(controller, "return " + script)
-    if (raw && typeof raw === "string") {
-      const parsed = JSON.parse(raw)
-      return { href: parsed.href || "", challenge: !!parsed.challenge }
-    }
-  } catch {
-    /* ignore */
-  }
-  return { href: "", challenge: false }
 }
 
 async function captureCookiesFromDocument(controller: any): Promise<WebCookie[]> {
@@ -869,50 +833,43 @@ async function probeApi(baseUrl: string): Promise<boolean> {
 
 async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
   disposeWebViewController()
-  const controller = new WebViewController()
+  // Clean-slate WebView, like the iOS Shortcuts WebView that passes Cloudflare on the
+  // first try: isolated cookie jar (no stale cf_clearance) and we inject NOTHING into
+  // the page, so the challenge runs completely untouched.
+  const controller = new WebViewController({ ephemeral: true })
   webViewController = controller
   verificationController = controller
 
   let webViewProbeOk = false
+  let done = false
 
   try {
     await registerWebViewHandlers(controller, baseUrl)
 
-    // NOTE: We deliberately do NOT seed stored cookies into the verify WebView.
-    // A stale/invalid cf_clearance can make Cloudflare re-challenge forever.
-    // Let the challenge run from a clean state, exactly like Safari does.
+    void loadWebViewHome(controller, baseUrl)
 
-    // Kick off the page load and give it a brief, bounded chance to commit before
-    // presenting, so the sheet shows the real page (or challenge) instead of blank —
-    // but never block on a slow/looping challenge.
-    await withTimeout(loadWebViewHome(controller, baseUrl), 4000, undefined)
-
-    // Fully automatic verification: while the sheet is open, passively watch the page.
-    // Once the challenge clears (and only then), capture cookies, confirm the API works,
-    // and auto-dismiss — no button, no DOM tampering during the challenge.
+    // Detect completion natively via getHTML() — no JS injection. While the Cloudflare
+    // challenge is on screen we leave it alone; once the real page is loaded we capture
+    // cookies, confirm the API works, and auto-dismiss.
     stopVerificationPoller()
     let polling = false
-    const host = hostFromBaseUrl(baseUrl)
     verificationPoller = setInterval(async function () {
-      if (polling) return
+      if (polling || done) return
       polling = true
       try {
-        const state = await readPageState(controller)
-
-        // Only reload on a CONFIRMED blank page. An empty/failed read just means the
-        // page (often the Cloudflare challenge) is still loading or sandboxing JS —
-        // never reload in that case or the challenge can never finish rendering.
-        if (state.href === "about:blank") {
-          await loadWebViewHome(controller, baseUrl)
-          return
+        let html = ""
+        try {
+          html = await controller.getHTML()
+        } catch {
+          html = ""
         }
-        if (!state.href) return // read failed / still loading — leave it untouched
-        if (state.challenge) return // challenge running — leave it untouched
-        if (state.href.indexOf(host) < 0) return // some other page — just wait
+        if (!html) return // still loading / sandboxed — leave it untouched
+        if (isChallengePage(html)) return // challenge still running — do not touch
 
         await saveCookiesFromWebView(controller, baseUrl)
         const ok = await probeApiInWebView(controller, baseUrl)
         if (ok) {
+          done = true
           webViewProbeOk = true
           stopVerificationPoller()
           if (controller.dismiss) controller.dismiss()
@@ -922,7 +879,7 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
       } finally {
         polling = false
       }
-    }, 2500)
+    }, 2000)
 
     await controller.present({
       fullscreen: true,
@@ -933,7 +890,6 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
 
     if (!webViewProbeOk) {
      // console.log("[animepaheSession] Sheet closed — probing live WebView session")
-      await waitForWebViewLoad(controller)
       await saveCookiesFromWebView(controller, baseUrl)
       webViewProbeOk = await probeApiInWebView(controller, baseUrl)
     }
