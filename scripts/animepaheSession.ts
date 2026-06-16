@@ -22,6 +22,7 @@ const USER_AGENT =
 const REQUIRED_COOKIE_NAMES = ["cf_clearance", "__ddg2_", "animepahe_session", "XSRF-TOKEN"]
 
 let bootstrapInFlight: Promise<boolean> | null = null
+let posterWebViewInit: Promise<boolean> | null = null
 let sessionReady = false
 let webViewController: any = null
 
@@ -171,6 +172,7 @@ function disposeWebViewController() {
   if (!webViewController) return
   clearWebViewFetchState()
   verificationController = null
+  posterWebViewInit = null
   try {
     webViewController.dispose()
   } catch {
@@ -511,7 +513,7 @@ async function preloadStoredCookies(controller: any, baseUrl: string) {
       await controller.setCookie({
         name: name,
         value: value,
-        domain: host,
+        domain: "." + registrableDomain(host),
         path: "/",
         isSecure: true,
         isHTTPOnly: false,
@@ -939,7 +941,7 @@ export async function webViewLoadImage(
   imageUrl: string
 ): Promise<{ status: number; body: string; dataUrl?: boolean }> {
   if (!webViewController) {
-    throw new Error("No active WebView session")
+    throw new Error("No poster WebView")
   }
   return webViewLoadImageViaMessageHandler(webViewController, imageUrl)
 }
@@ -991,6 +993,43 @@ async function probeApi(baseUrl: string): Promise<boolean> {
   return result.ok
 }
 
+/** Silent WebView on animepahe.pw for poster <img> loads (never present()). */
+export async function ensurePosterWebView(baseUrl?: string): Promise<boolean> {
+  if (webViewController) return true
+  if (posterWebViewInit) return posterWebViewInit
+
+  const base = baseUrl || getBaseUrl()
+  posterWebViewInit = (async function () {
+    console.log("[animepaheSession] Starting silent poster WebView")
+    const controller = new WebViewController()
+    webViewController = controller
+
+    try {
+      await registerWebViewHandlers(controller, base)
+      await preloadStoredCookies(controller, base)
+
+      const loaded = await controller.loadURL(base + "/")
+      if (!loaded) {
+        disposeWebViewController()
+        return false
+      }
+      if (controller.waitForLoad) await controller.waitForLoad()
+
+      console.log("[animepaheSession] Poster WebView ready")
+      return true
+    } catch (err) {
+      disposeWebViewController()
+      console.log("[animepaheSession] Poster WebView failed:", err)
+      return false
+    }
+  })()
+
+  try {
+    return await posterWebViewInit
+  } finally {
+    posterWebViewInit = null
+  }
+}
 
 async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
   disposeWebViewController()
@@ -1035,8 +1074,7 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
     if (probeOk) {
       saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false)
       sessionReady = true
-      disposeWebViewController()
-      console.log("[animepaheSession] Exported cookies work with fetch()")
+      console.log("[animepaheSession] Exported cookies work with fetch(); WebView kept for posters")
       return true
     }
 
@@ -1075,6 +1113,7 @@ async function runBootstrap(): Promise<boolean> {
   if (probe.ok) {
     sessionReady = true
     saveSetting(STORAGE_KEYS.ANIMEPAHE_WEBVIEW_SESSION, false)
+    await ensurePosterWebView(baseUrl)
     console.log("[animepaheSession] Boot probe HTTP", String(probe.status), "— session ready")
     return true
   }

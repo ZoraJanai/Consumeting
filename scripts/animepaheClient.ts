@@ -4,6 +4,8 @@ import {
   apiHeaders,
   bootstrapAnimepaheSession,
   ensureAnimepaheSession,
+  ensurePosterWebView,
+  hasWebViewController,
   getBaseUrl,
   getStoredCookieHeader,
   isChallengePage,
@@ -790,23 +792,30 @@ async function paheFetchImageInternal(
 
   await ensureAnimepaheSession()
 
-  const headers = paheNavigateImageHeaders()
   logPaheImage(
     "session",
-    "webview=" + String(isWebViewSessionActive()) +
+    "webview=" + String(hasWebViewController()) +
+      " apiWebView=" + String(isWebViewSessionActive()) +
       " cookieLen=" + String(getStoredCookieHeader().length),
-    headerSummary(headers)
+    url.slice(0, 80)
   )
+
+  if (!hasWebViewController()) {
+    await ensurePosterWebView()
+  }
 
   let result: ImageFetchResult
 
-  if (isWebViewSessionActive()) {
+  // Posters must load as <img> inside WebView (fetch hits CORS on i.animepahe.pw).
+  if (hasWebViewController()) {
     result = await fetchImageViaWebView(url)
   } else {
+    const headers = paheNavigateImageHeaders()
+    logPaheImage("headers", "native fallback", headerSummary(headers))
     result = await fetchImageWithHeaders(url, headers, "navigate")
   }
 
-  if (!result.ok && !retried && isWebViewSessionActive()) {
+  if (!result.ok && !retried && hasWebViewController()) {
     logPaheImage("retry", "img load retry", url.slice(0, 80))
     return paheFetchImageInternal(url, opts, true)
   }
