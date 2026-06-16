@@ -136,12 +136,7 @@ export async function bootstrap() {
 
 export async function run() {
   await bootstrap()
-  // Kick off session verification AFTER the main UI mounts. The verification
-  // WebView is presented as a sheet, which needs a live root view controller to
-  // attach to — presenting it before Navigation.present() silently fails (no sheet).
-  setTimeout(function () {
-    bootstrapAnimepaheSession()
-  }, 800)
+  await bootstrapAnimepaheSession()
   await Navigation.present({
     element: (
       <ZStack>
