@@ -222,9 +222,15 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
         setResults(baseResults)
 
         // If searching Animepahe, upgrade posters using AniList/MAL IDs from /a/{paheID}.
+        // Run in the background so search feels instant.
         if (provider === "Animepahe" && baseResults.length) {
-          const enhanced = await enhanceAnimepaheResultsWithExternalImages(baseResults as any)
-          if (!cancelled) setResults(enhanced as any)
+          enhanceAnimepaheResultsWithExternalImages(baseResults as any)
+            .then(function (enhanced) {
+              if (!cancelled) setResults(enhanced as any)
+            })
+            .catch(function () {
+              /* ignore */
+            })
         }
         setHasSearched(true)
       } catch {

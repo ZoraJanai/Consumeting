@@ -1,4 +1,4 @@
-﻿import { fetch } from "scripting"
+import { fetch } from "scripting"
 import { loadSetting, STORAGE_KEYS } from "./storage"
 import {
   apiHeaders,

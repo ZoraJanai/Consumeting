@@ -252,6 +252,15 @@ export function episodeNumber(number: number, total: number, action: string) {
         output = -1;
       }
       break;
+
+    case 'DownloadAll':
+      if (number >= total) {
+        output = -5;
+      } else {
+        output = -6;
+      }
+      break;
+
     default:
       return output;
   }
@@ -462,4 +471,34 @@ export async function downloadEpisode(
   }
 
   return [cacheEntry, queueEntry]
+}
+
+/** Queue a range of episodes for download without advancing watch progress. */
+export async function queueEpisodeRange(
+  info: EntryType,
+  current: number,
+  start: number,
+  end: number,
+  onProgress?: (done: number, total: number) => void,
+  onStart?: (total: number) => void,
+  askQuality?: (options: string[]) => Promise<string>
+): Promise<[Anime, DownloadAnime] | null> {
+  if (start > end) return null
+
+  const ogEntry: EntryType = {
+    ...info,
+    episode: String(current),
+    total: String(end),
+  }
+  saveSetting("entry", ogEntry)
+
+  const queueInfo: EntryType = {
+    ...info,
+    episode: String(start),
+    total: String(end),
+    ids: info.ids.slice(start - 1, end),
+  }
+  saveSetting("queueEntry", queueInfo)
+
+  return downloadEpisode(onProgress, onStart, askQuality)
 }

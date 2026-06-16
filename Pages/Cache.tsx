@@ -6,7 +6,7 @@ import {
 import { NumberInputSheet } from "./numberPopout"
 import { getInfoAnilist, getInfoAnimepahe } from "../scripts/search"
 import { normalizePaheUrl } from "../scripts/animepaheClient"
-import { downloadEpisode, episodeNumber, getEpisode, QualitiesOrder } from "../scripts/episode"
+import { downloadEpisode, episodeNumber, getEpisode, queueEpisodeRange, QualitiesOrder } from "../scripts/episode"
 import { getCache, getQueue, saveCache, saveQueue, addCache, addQueue } from "../scripts/cache"
 import { hideOverlay, showOverlay } from "./Loading"
 import { QualityPickerSheet } from "./QualityPickerSheet"
@@ -114,6 +114,7 @@ function TapMenu({
         <Menu label={<Text>Download</Text>}>
           <Button title="Continue" action={() => animeInfo(anime, "Continue")} />
           <Button title="Jump"     action={() => animeInfo(anime, "Jump")} />
+          <Button title="Download All" action={() => animeInfo(anime, "DownloadAll")} />
         </Menu>
       </>
     )
@@ -447,13 +448,76 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
     // 6) Confirm resume (-5)
     if (auto === -5) {
       console.log('[animeInfo] Path 6: Last episode warning (auto === -5)');
-      await Dialog.alert({
-        title: 'That was the last episode.',
-        message: 'Use resume to play it again.',
-        buttonLabel: 'Dismiss'
-      })
+      if (action === "DownloadAll") {
+        await Dialog.alert({
+          title: "All caught up",
+          message: "No unwatched episodes left.",
+          buttonLabel: "Dismiss",
+        })
+      } else {
+        await Dialog.alert({
+          title: 'That was the last episode.',
+          message: 'Use resume to play it again.',
+          buttonLabel: 'Dismiss'
+        })
+      }
       hideOverlay()
       console.log('[animeInfo] Path 6 complete');
+      return
+    }
+
+    // 7) Download all unwatched (-6)
+    if (auto === -6) {
+      console.log('[animeInfo] Path 7: Download all unwatched (auto === -6)');
+      const start = current + 1
+      const end = Number(info.total)
+      if (start > end) {
+        hideOverlay()
+        return
+      }
+
+      setProgressKey(k => k + 1)
+      setDownloadDone(0)
+      setDownloadTotal(0)
+      setProgressStarted(false)
+      setDownloading(true)
+
+      const tuple = await queueEpisodeRange(
+        info,
+        current,
+        start,
+        end,
+        (done, total) => {
+          if (!progressStarted) setProgressStarted(true)
+          setDownloadDone(done)
+          setDownloadTotal(total)
+        },
+        (total) => {
+          setDownloadDone(0)
+          setDownloadTotal(total)
+        },
+        async (options) => await askQualityOnce("Which quality?", options)
+      )
+
+      setDownloading(false)
+      if (!tuple) {
+        hideOverlay()
+        return
+      }
+
+      const [cacheItem, queueItem] = tuple
+      const updatedCache = await addCache(cacheItem)
+      setAnimes(updatedCache)
+      saveSetting(CACHE_KEY, updatedCache)
+      onCacheSaved?.()
+
+      const updatedQueue = await addQueue(queueItem)
+      setQueue(updatedQueue)
+      saveSetting(QUEUE_KEY, updatedQueue)
+      onQueueSaved?.()
+
+      hideOverlay()
+      console.log('[animeInfo] Path 7 complete');
       return
     }
     
@@ -561,6 +625,85 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
     saveSetting(CACHE_KEY, next)          // distinct key
     await saveCache(next)                  // save to unified file
     onCacheSaved?.()
+  }
+
+  async function downloadAllUnwatched() {
+    const candidates = animes.filter(function (a) {
+      if (!a || typeof a.episodes !== "string" || !a.episodes.includes("/")) return false
+      const parts = a.episodes.split("/")
+      const cur = Number(parts[0])
+      const tot = Number(parts[1])
+      return Number.isFinite(cur) && Number.isFinite(tot) && cur < tot
+    })
+
+    if (!candidates.length) {
+      await Dialog.alert({
+        title: "Nothing to download",
+        message: "No unwatched episodes in cache.",
+        buttonLabel: "Dismiss",
+      })
+      return
+    }
+
+    let totalEps = 0
+    for (let i = 0; i < candidates.length; i++) {
+      const parts = candidates[i].episodes.split("/")
+      totalEps += Number(parts[1]) - Number(parts[0])
+    }
+
+    showOverlay()
+    setProgressKey(function (k) { return k + 1 })
+    setDownloadDone(0)
+    setDownloadTotal(totalEps)
+    setProgressStarted(false)
+    setDownloading(true)
+
+    let doneEps = 0
+    let updatedQueue = queue
+
+    for (let i = 0; i < candidates.length; i++) {
+      const anime = candidates[i]
+      try {
+        const info = await chosenAnime(anime)
+        const current = anime.episodes.includes("/")
+          ? Number(anime.episodes.split("/")[0])
+          : 0
+        const start = current + 1
+        const end = Number(info.total)
+        if (start > end) continue
+
+        const tuple = await queueEpisodeRange(
+          info,
+          current,
+          start,
+          end,
+          function (done) {
+            setProgressStarted(true)
+            setDownloadDone(doneEps + done)
+            setDownloadTotal(totalEps)
+          },
+          undefined,
+          async function (options) {
+            return await askQualityOnce("Which quality?", options)
+          }
+        )
+
+        if (tuple) {
+          const queueItem = tuple[1]
+          updatedQueue = await addQueue(queueItem)
+          doneEps += end - start + 1
+          setDownloadDone(doneEps)
+        }
+      } catch (err) {
+        console.log("[downloadAllUnwatched] failed for", anime.name, err)
+      }
+    }
+
+    setQueue(updatedQueue)
+    saveSetting(QUEUE_KEY, updatedQueue)
+    onQueueSaved?.()
+    setDownloading(false)
+    hideOverlay()
   }
 
   async function refresh() {
@@ -681,6 +824,11 @@ return (
         navigationBarTitleDisplayMode="inline"
         listStyle="inset"
         refreshable={refresh}
+        toolbar={{
+          confirmationAction: [
+            <Button title="Download All" action={() => downloadAllUnwatched()} />,
+          ],
+        }}
         overlay={
           loadedOnce && animes.length === 0
             ? <ContentUnavailableView title="Nothing here to check" systemImage="aqi.medium" />

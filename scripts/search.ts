@@ -38,6 +38,13 @@ async function fetchAnimepaheInfo(id: string) {
 
 const anilistGraphqlUrl = 'https://graphql.anilist.co';
 
+// ---- Poster caching (in-memory) ----
+const paheIdToExternalCover = new Map<string, string>()
+const paheIdToAniListId = new Map<string, string>()
+const paheIdToMalId = new Map<string, string>()
+const aniListIdToCover = new Map<string, string>()
+const malIdToCover = new Map<string, string>()
+
 function anilistSearchQuery(query: string) {
   return {
     query: `
@@ -82,6 +89,24 @@ function anilistInfoQuery(id: string) {
     `,
     variables: { id: parseInt(id) },
   };
+}
+
+function anilistCoverQuery(id: string) {
+  return {
+    query: `
+      query ($id: Int) {
+        Media(id: $id, type: ANIME) {
+          id
+          coverImage {
+            extraLarge
+            large
+            medium
+          }
+        }
+      }
+    `,
+    variables: { id: parseInt(id) },
+  }
 }
 
 // ===== EXPORTED FUNCTIONS =====
@@ -181,8 +206,10 @@ function extractMalIdFromPaheHtml(html: string): string | null {
 }
 
 async function fetchAniListCover(anilistId: string): Promise<string | null> {
+  const cached = aniListIdToCover.get(anilistId)
+  if (cached) return cached
   try {
-    const requestData = anilistInfoQuery(anilistId)
+    const requestData = anilistCoverQuery(anilistId)
     const response = await fetch(anilistGraphqlUrl, {
       method: "POST",
       headers: {
@@ -195,14 +222,19 @@ async function fetchAniListCover(anilistId: string): Promise<string | null> {
     if (!response.ok) return null
     const data = await response.json()
     const media = data?.data?.Media
-    const cover = media?.coverImage?.large || media?.coverImage?.medium
-    return cover ? String(cover) : null
+    const cover =
+      media?.coverImage?.extraLarge || media?.coverImage?.large || media?.coverImage?.medium
+    const url = cover ? String(cover) : null
+    if (url) aniListIdToCover.set(anilistId, url)
+    return url
   } catch {
     return null
   }
 }
 
 async function fetchMalCover(malId: string): Promise<string | null> {
+  const cached = malIdToCover.get(malId)
+  if (cached) return cached
   try {
     const response = await fetch("https://api.jikan.moe/v4/anime/" + encodeURIComponent(malId))
     if (!response.ok) return null
@@ -212,23 +244,54 @@ async function fetchMalCover(malId: string): Promise<string | null> {
       data?.data?.images?.webp?.large_image_url ||
       data?.data?.images?.jpg?.image_url ||
       data?.data?.images?.webp?.image_url
-    return img ? String(img) : null
+    const url = img ? String(img) : null
+    if (url) malIdToCover.set(malId, url)
+    return url
   } catch {
     return null
   }
 }
 
 async function resolveExternalCoverFromPaheId(paheID: string): Promise<string | null> {
+  const cachedCover = paheIdToExternalCover.get(paheID)
+  if (cachedCover) return cachedCover
+
+  const cachedAniList = paheIdToAniListId.get(paheID)
+  if (cachedAniList) {
+    const cover = await fetchAniListCover(cachedAniList)
+    if (cover) {
+      paheIdToExternalCover.set(paheID, cover)
+      return cover
+    }
+  }
+
+  const cachedMal = paheIdToMalId.get(paheID)
+  if (cachedMal) {
+    const cover = await fetchMalCover(cachedMal)
+    if (cover) {
+      paheIdToExternalCover.set(paheID, cover)
+      return cover
+    }
+  }
+
   const html = await paheFetchAnimeMainPageById(paheID)
   const anilist = extractAniListIdFromPaheHtml(html)
   if (anilist) {
+    paheIdToAniListId.set(paheID, anilist)
     const cover = await fetchAniListCover(anilist)
-    if (cover) return cover
+    if (cover) {
+      paheIdToExternalCover.set(paheID, cover)
+      return cover
+    }
   }
   const mal = extractMalIdFromPaheHtml(html)
   if (mal) {
+    paheIdToMalId.set(paheID, mal)
     const cover = await fetchMalCover(mal)
-    if (cover) return cover
+    if (cover) {
+      paheIdToExternalCover.set(paheID, cover)
+      return cover
+    }
   }
   return null
 }
@@ -266,7 +329,7 @@ export async function enhanceAnimepaheResultsWithExternalImages(list: Anime[]): 
     .filter(x => !!x.a.paheID)
 
   // Limit concurrency to avoid rate limits.
-  await asyncPool(3, targets, async function (t) {
+  await asyncPool(6, targets, async function (t) {
     const paheID = t.a.paheID
     if (!paheID) return
     try {
