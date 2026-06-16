@@ -875,16 +875,24 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
     // Once the challenge clears (and only then), capture cookies, confirm the API works,
     // and auto-dismiss — no button, no DOM tampering during the challenge.
     stopVerificationPoller()
+    let polling = false
+    const host = hostFromBaseUrl(baseUrl)
     verificationPoller = setInterval(async function () {
+      if (polling) return
+      polling = true
       try {
         const state = await readPageState(controller)
 
-        if (isBlankOrWrongHost(state.href, baseUrl)) {
+        // Only reload on a CONFIRMED blank page. An empty/failed read just means the
+        // page (often the Cloudflare challenge) is still loading or sandboxing JS —
+        // never reload in that case or the challenge can never finish rendering.
+        if (state.href === "about:blank") {
           await loadWebViewHome(controller, baseUrl)
           return
         }
-
-        if (state.challenge) return // challenge still running — leave it untouched
+        if (!state.href) return // read failed / still loading — leave it untouched
+        if (state.challenge) return // challenge running — leave it untouched
+        if (state.href.indexOf(host) < 0) return // some other page — just wait
 
         await saveCookiesFromWebView(controller, baseUrl)
         const ok = await probeApiInWebView(controller, baseUrl)
@@ -895,8 +903,10 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
         }
       } catch {
         /* ignore poll errors */
+      } finally {
+        polling = false
       }
-    }, 2000)
+    }, 2500)
 
     await controller.present({
       fullscreen: true,
