@@ -572,7 +572,7 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
     })
 
     await controller.addScriptMessageHandler("pahePageReady", async function (pageUrl: string) {
-      console.log("[animepaheSession] WebView navigated:", pageUrl)
+      //console.log("[animepaheSession] WebView navigated:", pageUrl)
       if (isBlankOrWrongHost(pageUrl, baseUrl)) {
         console.log("[animepaheSession] Blank or wrong host — reloading home")
         await loadWebViewHome(controller, baseUrl)
