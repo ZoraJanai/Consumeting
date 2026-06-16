@@ -5,9 +5,7 @@ import {
 } from "scripting"
 import {
   clearStoredSession,
-  getStoredCookieHeader,
-  hasStoredSession,
-  importCookieHeader,
+  isSessionReady,
   refreshAnimepaheSession,
 } from "../scripts/animepaheSession"
 
@@ -130,7 +128,7 @@ export function SettingsPage() {
   const [animepaheApiUrl, setAnimepaheApiUrl] = useState(
     loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "")
   )
-  const [sessionActive, setSessionActive] = useState(hasStoredSession())
+  const [sessionActive, setSessionActive] = useState(isSessionReady())
   const [rustProxyUrl, setRustProxyUrl] = useState(
     loadSetting(STORAGE_KEYS.RUST_PROXY_URL, "https://rust-proxy-hvm4.onrender.com")
   )
@@ -178,20 +176,7 @@ export function SettingsPage() {
 
   async function verifyAnimepahe() {
     const ok = await refreshAnimepaheSession()
-    setSessionActive(ok || hasStoredSession())
-  }
-
-  async function pasteAnimepaheCookies() {
-    const input = await Dialog.prompt({
-      title: "Animepahe cookies",
-      message:
-        "Paste the full Cookie header from browser DevTools (Application > Cookies, or Network request headers).",
-      value: getStoredCookieHeader(),
-    })
-    if (input == null || !input.trim()) return
-
-    const ok = await importCookieHeader(input)
-    setSessionActive(ok || hasStoredSession())
+    setSessionActive(ok || isSessionReady())
   }
 
   function clearAnimepaheSession() {
@@ -260,12 +245,8 @@ export function SettingsPage() {
             action={editAnimepaheBaseUrl}
           />
           <Button
-            title={sessionActive ? "Animepahe session: active" : "Animepahe session: not verified"}
+            title={sessionActive ? "Animepahe session: active" : "Re-verify Animepahe (Cloudflare)"}
             action={verifyAnimepahe}
-          />
-          <Button
-            title="Paste Animepahe cookies (from browser DevTools)"
-            action={pasteAnimepaheCookies}
           />
           <Button
             title="Clear Animepahe session"

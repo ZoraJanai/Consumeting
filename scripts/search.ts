@@ -1,5 +1,5 @@
 import { fetch } from "scripting"
-import { paheFetchAllEpisodes, paheSearch, prefetchPahePosters } from "./animepaheClient"
+import { paheFetchAllEpisodes, paheSearch } from "./animepaheClient"
 import { normalizePaheUrl } from "./animepaheSession"
 
 // Type definitions
@@ -143,12 +143,6 @@ const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
       console.log("[searchAnimepahe] sample poster raw:", results[0].poster);
       console.log("[searchAnimepahe] sample poster normalized:", output[0].img);
     }
-
-    void prefetchPahePosters(
-      output.map(function (item) {
-        return { url: item.img, session: item.source }
-      })
-    )
 
     console.log('[searchAnimepahe] DONE - returning', output.length, 'results');
     return output;

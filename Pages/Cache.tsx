@@ -6,7 +6,6 @@ import {
 import { NumberInputSheet } from "./numberPopout"
 import { getInfoAnilist, getInfoAnimepahe } from "../scripts/search"
 import { PaheImage } from "./PaheImage"
-import { cachePosterForAnime } from "../scripts/animepaheClient"
 import { downloadEpisode, episodeNumber, getEpisode, QualitiesOrder } from "../scripts/episode"
 import { getCache, getQueue, saveCache, saveQueue, addCache, addQueue } from "../scripts/cache"
 import { hideOverlay, showOverlay } from "./Loading"
@@ -73,7 +72,6 @@ export async function chosenAnime(anime: Anime) {
   if (anime.source.includes("-")) {
     console.log('[chosenAnime] Source contains "-", calling getInfoAnimepahe');
     info = await getInfoAnimepahe(anime)
-    info = await cachePosterForAnime(info)
     console.log('[chosenAnime] getInfoAnimepahe returned');
   } else {
     console.log('[chosenAnime] Source is numeric, calling getInfoAnilist');

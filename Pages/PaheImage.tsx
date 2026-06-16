@@ -1,57 +1,78 @@
 import { Image, useEffect, useState } from "scripting"
-import { isLocalPosterPath, normalizePaheUrl, paheFetchImage } from "../scripts/animepaheClient"
+import {
+  isLocalPosterPath,
+  needsPosterAuthFetch,
+  normalizePaheUrl,
+  paheFetchImage,
+} from "../scripts/animepaheClient"
+
+type PosterAspectRatio = {
+  contentMode: "fit" | "fill"
+  value: number
+}
 
 type PaheImageProps = {
   url: string
+  /** Sets Referer to /anime/{session} — matches browser poster requests. */
   animeSession?: string
-  aspectRatio?: { contentMode: string; value: number }
+  aspectRatio?: PosterAspectRatio
   frame?: Record<string, any>
   resizable?: boolean
   padding?: number
 }
 
-function isRemotePahePoster(url: string): boolean {
-  if (!url || url.indexOf("http") !== 0) return false
-  const lower = url.toLowerCase()
-  return lower.indexOf("anilist.co") < 0 && lower.indexOf("ibb.co") < 0
-}
-
+/**
+ * Animepahe posters need Cloudflare cookies + Referer via fetch() — plain imageUrl cannot send them.
+ * Anilist and other hosts use direct imageUrl.
+ */
 export function PaheImage(props: PaheImageProps) {
-  const rawUrl = props.url
-  const url = normalizePaheUrl(rawUrl)
-  const isLocal = isLocalPosterPath(url)
-  const needsFetch = isRemotePahePoster(url)
-  const [uiImage, setUiImage] = useState<any>(null)
-  const [filePath, setFilePath] = useState(isLocal ? url : "")
+  const url = normalizePaheUrl(props.url)
+  const needsAuth = needsPosterAuthFetch(url)
+  const [displayUrl, setDisplayUrl] = useState("")
+  const [filePath, setFilePath] = useState(isLocalPosterPath(url) ? url : "")
+
+  const layout = {
+    aspectRatio: props.aspectRatio,
+    frame: props.frame,
+    resizable: props.resizable,
+    padding: props.padding,
+  }
 
   useEffect(
     function () {
+      if (!url) {
+        setDisplayUrl("")
+        setFilePath("")
+        return
+      }
+
+      if (isLocalPosterPath(url)) {
+        setFilePath(url)
+        setDisplayUrl("")
+        return
+      }
+
+      if (url.indexOf("data:image") === 0) {
+        setDisplayUrl(url)
+        setFilePath("")
+        return
+      }
+
+      if (!needsAuth) {
+        setDisplayUrl(url)
+        setFilePath("")
+        return
+      }
+
       let cancelled = false
-      setUiImage(null)
-      setFilePath(isLocal ? url : "")
-
-      if (!url) return
-
-      if (isLocal) {
-        console.log("[paheImage] local file", url)
-        return
-      }
-
-      if (!needsFetch) {
-        console.log("[paheImage] direct url", url.slice(0, 80))
-        return
-      }
-
-      console.log("[paheImage] fetch", url.slice(0, 80), "session=" + String(props.animeSession || ""))
+      setDisplayUrl("")
+      setFilePath("")
 
       paheFetchImage(url, { animeSession: props.animeSession })
         .then(function (result) {
           if (cancelled || !result) return
-          if (result.kind === "ui") {
-            setUiImage(result.image)
-          } else if (result.kind === "file") {
-            setFilePath(result.path)
-          }
+          if (result.kind === "dataUrl") setDisplayUrl(result.url)
+          if (result.kind === "file") setFilePath(result.path)
         })
         .catch(function (err) {
           if (!cancelled) console.log("[paheImage] error", String(err))
@@ -61,18 +82,17 @@ export function PaheImage(props: PaheImageProps) {
         cancelled = true
       }
     },
-    [rawUrl, url, isLocal, needsFetch, props.animeSession]
+    [url, needsAuth, props.animeSession]
   )
 
-  return (
-    <Image
-      image={uiImage || undefined}
-      filePath={!uiImage && filePath ? filePath : undefined}
-      imageUrl={!uiImage && !filePath ? url : undefined}
-      aspectRatio={props.aspectRatio}
-      frame={props.frame}
-      resizable={props.resizable}
-      padding={props.padding}
-    />
-  )
+  if (filePath) {
+    return <Image filePath={filePath} {...layout} />
+  }
+  if (displayUrl) {
+    return <Image imageUrl={displayUrl} {...layout} />
+  }
+  if (!needsAuth && url) {
+    return <Image imageUrl={url} {...layout} />
+  }
+  return <Image {...layout} />
 }
