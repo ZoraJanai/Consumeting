@@ -16,8 +16,62 @@ declare const WebViewController: {
   new (): any
 }
 
-const USER_AGENT =
+/** Fallback UA if device detection hasn't run yet. */
+const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+
+let cachedUserAgent: string | null = null
+
+/** Real device WebView UA — must match the UA that solves the Cloudflare challenge. */
+function getUserAgent(): string {
+  if (cachedUserAgent) return cachedUserAgent
+  const stored = loadSetting<string>(STORAGE_KEYS.ANIMEPAHE_USER_AGENT, "")
+  if (stored && stored.trim()) {
+    cachedUserAgent = stored.trim()
+    return cachedUserAgent
+  }
+  return DEFAULT_USER_AGENT
+}
+
+/** Detect the device's native WebView user agent and cache it for fetch() headers. */
+async function detectDeviceUserAgent(): Promise<string> {
+  const stored = loadSetting<string>(STORAGE_KEYS.ANIMEPAHE_USER_AGENT, "")
+  if (stored && stored.trim()) {
+    cachedUserAgent = stored.trim()
+    return cachedUserAgent
+  }
+
+  let controller: any = null
+  try {
+    controller = new WebViewController()
+    await controller.loadURL("about:blank")
+    if (controller.waitForLoad) {
+      try {
+        await controller.waitForLoad()
+      } catch {
+        /* ignore */
+      }
+    }
+    const ua = await controller.evaluateJavaScript("return navigator.userAgent")
+    if (ua && typeof ua === "string" && ua.trim()) {
+      cachedUserAgent = ua.trim()
+      saveSetting(STORAGE_KEYS.ANIMEPAHE_USER_AGENT, cachedUserAgent)
+      console.log("[animepaheSession] Detected device UA:", cachedUserAgent)
+    }
+  } catch (err) {
+    console.log("[animepaheSession] UA detection failed:", String(err))
+  } finally {
+    if (controller) {
+      try {
+        controller.dispose()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return getUserAgent()
+}
 
 const REQUIRED_COOKIE_NAMES = ["cf_clearance", "__ddg2_", "animepahe_session", "XSRF-TOKEN"]
 
@@ -340,7 +394,7 @@ export function paheHeaders(opts?: {
 
   const headers: Record<string, string> = {
     Referer: referer,
-    "User-Agent": USER_AGENT,
+    "User-Agent": getUserAgent(),
     "Sec-Fetch-Site": fetchSite,
     "Sec-Fetch-Mode": mode,
   }
@@ -879,6 +933,10 @@ async function runBootstrap(): Promise<boolean> {
 
   const baseUrl = getBaseUrl()
  // console.log("[animepaheSession] Bootstrapping session for", baseUrl)
+
+  // Ensure fetch() uses the same UA the WebView uses to solve Cloudflare,
+  // otherwise cf_clearance is rejected and the challenge loops.
+  await detectDeviceUserAgent()
 
   if (isWebViewSessionActive() && webViewController) {
     sessionReady = true
