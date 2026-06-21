@@ -9,8 +9,8 @@ import {
   directFetchPlayPage,
   getDirectBaseUrl,
   paheFetchStreamingSourcesFromApi,
-  paheHeaders,
 } from "./animepaheClient"
+import { paheHeaders } from "./animepaheSession"
 
 // ---- Types ----
 
