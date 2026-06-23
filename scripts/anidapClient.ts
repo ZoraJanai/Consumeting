@@ -171,7 +171,7 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
   if (!res.ok) throw new Error(`[anidap] info failed: ${res.status}`)
 
   const text = await res.text()
-  console.log("[anidap] info raw response:", text.substring(0, 500))
+  console.log("[anidap] info raw response:", text.substring(0, 3000))
 
   let raw: any
   try {
@@ -180,28 +180,69 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
     throw new Error(`[anidap] info response is not JSON: ${text.substring(0, 200)}`)
   }
 
-  // "dehydrated JSON array" — try both array and object shapes
+  // Decode Next.js RSC dehydrated reference-graph array.
+  // Format: flat array where objects use {"_N": M} meaning
+  //   property(name=arr[N]) = arr[M].
+  // We fully resolve the graph into a plain JS object, then extract the slug.
   let slug = ""
   let title = ""
   let image: string | undefined
 
   if (Array.isArray(raw)) {
-    // Walk the array looking for a slug-like string and a metadata object
-    for (let i = 0; i < raw.length; i++) {
-      if (!slug && typeof raw[i] === "string" && raw[i].includes("-")) {
-        slug = raw[i]
+    // Resolve a node: if it's an object with _N keys, rebuild with resolved keys/values
+    function resolve(node: any, visited = new Set<number>()): any {
+      if (node === null || typeof node !== "object" || Array.isArray(node)) return node
+      const out: Record<string, any> = {}
+      for (const k of Object.keys(node)) {
+        const nameIdx = Number(k.replace("_", ""))
+        const valIdx: number = node[k]
+        if (isNaN(nameIdx) || typeof valIdx !== "number") {
+          out[k] = node[k]
+          continue
+        }
+        const name = raw[nameIdx]
+        const val = raw[valIdx]
+        if (visited.has(valIdx)) {
+          out[String(name)] = "<circular>"
+          continue
+        }
+        visited.add(valIdx)
+        out[String(name)] = resolve(val, visited)
+        visited.delete(valIdx)
       }
-      if (!title && raw[i] && typeof raw[i] === "object") {
-        const meta = raw[i]
-        title = meta?.title?.en || meta?.title?.romaji || meta?.title || meta?.name || ""
-        image = meta?.image || meta?.coverImage?.large || meta?.bannerImage
-      }
+      return out
     }
-    if (!title && slug) title = slug
+
+    // The top-level object is at index 0; resolve it to get the full tree
+    const tree = resolve(raw[0])
+    console.log("[anidap] resolved tree keys:", JSON.stringify(Object.keys(tree)).substring(0, 300))
+
+    // Navigate: tree["routes/info/page"]["data"]["animeData"]
+    const routeKey = Object.keys(tree).find(k => k.includes("info"))
+    const routeData = routeKey ? tree[routeKey] : tree
+    const data = routeData?.data ?? routeData
+    const animeData = data?.animeData ?? data
+
+    console.log("[anidap] animeData keys:", JSON.stringify(Object.keys(animeData ?? {})).substring(0, 300))
+
+    slug = animeData?.slug ?? animeData?.anidapId ?? animeData?.id ?? ""
+    title =
+      animeData?.title?.english ||
+      animeData?.title?.romaji ||
+      animeData?.title?.native ||
+      animeData?.title ||
+      animeData?.name ||
+      ""
+    image =
+      animeData?.coverImage?.extraLarge ||
+      animeData?.coverImage?.large ||
+      animeData?.bannerImage ||
+      animeData?.image ||
+      ""
   } else if (raw && typeof raw === "object") {
-    slug = raw.slug || raw.id || raw.anidapId || ""
-    title = raw.title?.en || raw.title?.romaji || raw.title || raw.name || slug
-    image = raw.image || raw.coverImage?.large || raw.bannerImage
+    slug = raw.slug || raw.anidapId || raw.id || ""
+    title = raw.title?.english || raw.title?.romaji || raw.title || raw.name || slug
+    image = raw.coverImage?.large || raw.bannerImage || raw.image
   }
 
   if (!slug) throw new Error(`[anidap] could not extract slug from response: ${text.substring(0, 300)}`)
