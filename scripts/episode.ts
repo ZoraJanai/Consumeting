@@ -7,9 +7,30 @@ import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
+<<<<<<< Updated upstream
 
 
 
+=======
+import {
+  directFetchPlayPage,
+  getDirectBaseUrl,
+  paheFetchStreamingSourcesFromApi,
+} from "./animepaheClient"
+import { paheHeaders } from "./animepaheSession"
+import { presentBuiltInPlayer } from "../Pages/VideoPlayerScreen"
+
+const KWIK_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+
+function kwikPlaybackHeaders(): Record<string, string> {
+  return {
+    Referer: "https://kwik.cx/",
+    Origin: "https://kwik.cx",
+    "User-Agent": KWIK_USER_AGENT,
+  }
+}
+>>>>>>> Stashed changes
 
 // ---- Types ----
 
@@ -216,7 +237,14 @@ export async function getEpisode(
   const entry = loadSetting("entry", PlaceholderEntry)
   const autoQuality = loadSetting(STORAGE_KEYS.AUTO_QUALITY, true)
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
+<<<<<<< Updated upstream
   const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
+=======
+  console.log("[getEpisode] Quality order:", order);
+  
+  const player = loadSetting<string>(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
+  console.log("[getEpisode] Player:", player);
+>>>>>>> Stashed changes
 
   const sources = await getAnimepaheSources(entry.ids[index - 1])        // tag -> url
   const tags = Object.keys(sources)
@@ -254,9 +282,29 @@ order = newOrder
   const hls = await kwikExtractor(String(selectedUrl))
   hideOverlay()
 
+<<<<<<< Updated upstream
   const finalUrl = player === "nPlayer" ? "-" + hls : hls.replace("https", "")
   //console.log((player + finalUrl).toLowerCase())
   await Safari.openURL((player + finalUrl).toLowerCase())
+=======
+  if (player === "Built-in") {
+    console.log("[getEpisode] Opening built-in player");
+    presentBuiltInPlayer({
+      url: selectedUrl,
+      headers: kwikPlaybackHeaders(),
+      title: `${entry.name} — ${index}`,
+    })
+  } else {
+    const rustProxyBase = getRustProxyUrl()
+    const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(selectedUrl)}&origin=https://kwik.cx`
+    const finalUrl = player === "nPlayer" ? "-" + proxyUrl : "://" + proxyUrl
+    console.log("[getEpisode] Proxy URL:", proxyUrl);
+    console.log("[getEpisode] Final URL:", (player + finalUrl).toLowerCase());
+    console.log("[getEpisode] Opening in Safari...");
+    await Safari.openURL((player + finalUrl).toLowerCase())
+    console.log("[getEpisode] Safari opened");
+  }
+>>>>>>> Stashed changes
 
   const stillUnread = index !== Number(entry.total)
   const cacheEntry: Anime = {

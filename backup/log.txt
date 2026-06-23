@@ -1,0 +1,172 @@
+
+
+Log:
+
+9:48:46 PM [animepaheSession] Bootstrapping session for https://animepahe.pw
+9:48:46 PM [animepaheSession] Stored cookies missing: cf_clearance, __ddg2_, animepahe_session
+9:48:47 PM [animepaheSession] Stored cookies rejected by API probe
+9:48:47 PM [animepaheSession] Opening verification sheet
+9:48:48 PM [animepaheSession] Continue tapped — saving session from live WebView
+9:48:48 PM [animepaheSession] getAllCookies unavailable (TestFlight feature?)
+9:48:48 PM [animepaheSession] getCookies unavailable
+9:48:48 PM [animepaheSession] document.cookie length: 391
+9:48:48 PM [animepaheSession] Cookie sources: document=5
+9:48:48 PM [animepaheSession] Captured cookie names: XSRF-TOKEN, latest, aud, av1, res
+9:48:48 PM [animepaheSession] Saved cookie header length: 391
+9:48:49 PM [animepaheSession] WebView probe while open: ok
+9:48:50 PM [animepaheSession] Live WebView session active — requests run inside WebView
+9:48:53 PM [searchAnimepahe] START - query: nier
+9:48:53 PM [searchAnimepahe] Got 3 results
+9:48:53 PM [searchAnimepahe] DONE - returning 3 results
+9:48:53 PM [animepaheClient] WebView image fetch failed: Error: WebView fetch already in progress
+9:48:53 PM [animepaheClient] WebView image fetch failed: Error: WebView fetch already in progress
+9:48:58 PM [chosenAnime] START - anime: NieR:Automata Ver1.1a source: 552cdcf0-0243-0908-ef09-4e4feaf256f4
+9:48:58 PM [chosenAnime] Source contains "-", calling getInfoAnimepahe
+9:48:58 PM [getInfoAnimepahe] START - anime: NieR:Automata Ver1.1a
+9:48:58 PM [getInfoAnimepahe] Searching Animepahe
+9:48:58 PM [searchAnimepahe] START - query: NieR:Automata Ver1.1a
+9:48:58 PM [searchAnimepahe] Got 3 results
+9:48:58 PM [searchAnimepahe] DONE - returning 3 results
+9:48:58 PM [getInfoAnimepahe] Search returned 3 results
+9:48:58 PM [getInfoAnimepahe] Got exact match: NieR:Automata Ver1.1a
+9:48:58 PM [getInfoAnimepahe] Fetching info for source: 552cdcf0-0243-0908-ef09-4e4feaf256f4
+9:48:58 PM [fetchAnimepaheInfo] START - id: 552cdcf0-0243-0908-ef09-4e4feaf256f4
+9:48:59 PM [fetchAnimepaheInfo] DONE - episodes: 12
+9:48:59 PM [getInfoAnimepahe] Got 12 episodes
+9:48:59 PM [getInfoAnimepahe] Mapped 12 episode IDs
+9:48:59 PM [getInfoAnimepahe] DONE - returning output: {
+  "total": "12",
+  "ids": [
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/3933255ddcbbd20af4c6758a0b7e7a76faf9e758ff6d972f3baaab884b4c62e2",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/f5d447ef42ad6ad5f428374cd11057831f845271c9463711d072c970e0c7b7ed",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/9b98dc8f65463f93184577e37958d632f5ce34d28285be1c0e5a45747fdabda9",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/0e7d73c4174a6a070138e40f431f600d209456d43766c44b789add6fd7a744c2",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/d000f7cec271fcb84b9a73b15d6780fceb98701dbf82e7248da3bcf9fd6c2c1a",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/c9f39bf3afd3c355bb124863d89e261e02ef44dc025b9369768aed1579cfa692",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/5391cf90832890871c573ade3951c2995feed3317979b811640a6e3626aa7317",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/cae6e55fda28ba92101e33b6e21311262e43feb580c186b5adfdf55741636cc8",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/0efc34386fcac8b204f96f3b7102ef0985d4f2e7ea72def0672d44b3ef2a26ed",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/84e5c26f83d1cedc02bcc0e58252d4d8532ee9e07617943d5fc7ad144c8137fc",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/49d76e38b4e222b986d34ca109e222a501f3fba3865fa537b4ae89aa6100683b",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/d52e0e63f8477b34f3c43ef00ddac2046fbe645c6985dd390a86802bd69be899"
+  ],
+  "name": "NieR:Automata Ver1.1a",
+  "id": "552cdcf0-0243-0908-ef09-4e4feaf256f4",
+  "episode": "none",
+  "img": "https://i.animepahe.pw/uploads/posters/fc1/fc1231d23a2bce66d50f739a57eee6828c97d0afb6e6a9895ba81cc7d4102041.webp"
+}
+9:48:59 PM [chosenAnime] getInfoAnimepahe returned
+9:48:59 PM [chosenAnime] Saving entry
+9:48:59 PM [chosenAnime] DONE - returning info
+9:48:59 PM {
+  "total": "12",
+  "ids": [
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/3933255ddcbbd20af4c6758a0b7e7a76faf9e758ff6d972f3baaab884b4c62e2",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/f5d447ef42ad6ad5f428374cd11057831f845271c9463711d072c970e0c7b7ed",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/9b98dc8f65463f93184577e37958d632f5ce34d28285be1c0e5a45747fdabda9",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/0e7d73c4174a6a070138e40f431f600d209456d43766c44b789add6fd7a744c2",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/d000f7cec271fcb84b9a73b15d6780fceb98701dbf82e7248da3bcf9fd6c2c1a",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/c9f39bf3afd3c355bb124863d89e261e02ef44dc025b9369768aed1579cfa692",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/5391cf90832890871c573ade3951c2995feed3317979b811640a6e3626aa7317",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/cae6e55fda28ba92101e33b6e21311262e43feb580c186b5adfdf55741636cc8",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/0efc34386fcac8b204f96f3b7102ef0985d4f2e7ea72def0672d44b3ef2a26ed",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/84e5c26f83d1cedc02bcc0e58252d4d8532ee9e07617943d5fc7ad144c8137fc",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/49d76e38b4e222b986d34ca109e222a501f3fba3865fa537b4ae89aa6100683b",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/d52e0e63f8477b34f3c43ef00ddac2046fbe645c6985dd390a86802bd69be899"
+  ],
+  "name": "NieR:Automata Ver1.1a",
+  "id": "552cdcf0-0243-0908-ef09-4e4feaf256f4",
+  "episode": "none",
+  "img": "https://i.animepahe.pw/uploads/posters/fc1/fc1231d23a2bce66d50f739a57eee6828c97d0afb6e6a9895ba81cc7d4102041.webp"
+}
+9:48:59 PM 0
+9:49:07 PM [animeInfo] START - anime: NieR:Automata Ver1.1a action: Continue
+9:49:07 PM [animeInfo] Overlay shown, fetching anime info...
+9:49:07 PM [chosenAnime] START - anime: NieR:Automata Ver1.1a source: 552cdcf0-0243-0908-ef09-4e4feaf256f4
+9:49:07 PM [chosenAnime] Source contains "-", calling getInfoAnimepahe
+9:49:07 PM [getInfoAnimepahe] START - anime: NieR:Automata Ver1.1a
+9:49:07 PM [getInfoAnimepahe] Searching Animepahe
+9:49:07 PM [searchAnimepahe] START - query: NieR:Automata Ver1.1a
+9:49:08 PM [searchAnimepahe] Got 3 results
+9:49:08 PM [searchAnimepahe] DONE - returning 3 results
+9:49:08 PM [getInfoAnimepahe] Search returned 3 results
+9:49:08 PM [getInfoAnimepahe] Got exact match: NieR:Automata Ver1.1a
+9:49:08 PM [getInfoAnimepahe] Fetching info for source: 552cdcf0-0243-0908-ef09-4e4feaf256f4
+9:49:08 PM [fetchAnimepaheInfo] START - id: 552cdcf0-0243-0908-ef09-4e4feaf256f4
+9:49:08 PM [fetchAnimepaheInfo] DONE - episodes: 12
+9:49:08 PM [getInfoAnimepahe] Got 12 episodes
+9:49:08 PM [getInfoAnimepahe] Mapped 12 episode IDs
+9:49:08 PM [getInfoAnimepahe] DONE - returning output: {
+  "total": "12",
+  "ids": [
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/3933255ddcbbd20af4c6758a0b7e7a76faf9e758ff6d972f3baaab884b4c62e2",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/f5d447ef42ad6ad5f428374cd11057831f845271c9463711d072c970e0c7b7ed",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/9b98dc8f65463f93184577e37958d632f5ce34d28285be1c0e5a45747fdabda9",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/0e7d73c4174a6a070138e40f431f600d209456d43766c44b789add6fd7a744c2",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/d000f7cec271fcb84b9a73b15d6780fceb98701dbf82e7248da3bcf9fd6c2c1a",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/c9f39bf3afd3c355bb124863d89e261e02ef44dc025b9369768aed1579cfa692",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/5391cf90832890871c573ade3951c2995feed3317979b811640a6e3626aa7317",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/cae6e55fda28ba92101e33b6e21311262e43feb580c186b5adfdf55741636cc8",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/0efc34386fcac8b204f96f3b7102ef0985d4f2e7ea72def0672d44b3ef2a26ed",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/84e5c26f83d1cedc02bcc0e58252d4d8532ee9e07617943d5fc7ad144c8137fc",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/49d76e38b4e222b986d34ca109e222a501f3fba3865fa537b4ae89aa6100683b",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/d52e0e63f8477b34f3c43ef00ddac2046fbe645c6985dd390a86802bd69be899"
+  ],
+  "name": "NieR:Automata Ver1.1a",
+  "id": "552cdcf0-0243-0908-ef09-4e4feaf256f4",
+  "episode": "none",
+  "img": "https://i.animepahe.pw/uploads/posters/fc1/fc1231d23a2bce66d50f739a57eee6828c97d0afb6e6a9895ba81cc7d4102041.webp"
+}
+9:49:08 PM [chosenAnime] getInfoAnimepahe returned
+9:49:08 PM [chosenAnime] Saving entry
+9:49:08 PM [chosenAnime] DONE - returning info
+9:49:08 PM [animeInfo] Info received: {
+  "total": "12",
+  "ids": [
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/3933255ddcbbd20af4c6758a0b7e7a76faf9e758ff6d972f3baaab884b4c62e2",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/f5d447ef42ad6ad5f428374cd11057831f845271c9463711d072c970e0c7b7ed",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/9b98dc8f65463f93184577e37958d632f5ce34d28285be1c0e5a45747fdabda9",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/0e7d73c4174a6a070138e40f431f600d209456d43766c44b789add6fd7a744c2",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/d000f7cec271fcb84b9a73b15d6780fceb98701dbf82e7248da3bcf9fd6c2c1a",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/c9f39bf3afd3c355bb124863d89e261e02ef44dc025b9369768aed1579cfa692",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/5391cf90832890871c573ade3951c2995feed3317979b811640a6e3626aa7317",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/cae6e55fda28ba92101e33b6e21311262e43feb580c186b5adfdf55741636cc8",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/0efc34386fcac8b204f96f3b7102ef0985d4f2e7ea72def0672d44b3ef2a26ed",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/84e5c26f83d1cedc02bcc0e58252d4d8532ee9e07617943d5fc7ad144c8137fc",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/49d76e38b4e222b986d34ca109e222a501f3fba3865fa537b4ae89aa6100683b",
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/d52e0e63f8477b34f3c43ef00ddac2046fbe645c6985dd390a86802bd69be899"
+  ],
+  "name": "NieR:Automata Ver1.1a",
+  "id": "552cdcf0-0243-0908-ef09-4e4feaf256f4",
+  "episode": "none",
+  "img": "https://i.animepahe.pw/uploads/posters/fc1/fc1231d23a2bce66d50f739a57eee6828c97d0afb6e6a9895ba81cc7d4102041.webp"
+}
+9:49:08 PM [animeInfo] Current episode: 0
+9:49:08 PM [animeInfo] Auto value: -1
+9:49:08 PM [animeInfo] Path 3: Ask once (auto === -1)
+9:49:08 PM [animeInfo] Asking user for number, title: End episode for NieR:Automata Ver1.1a
+9:49:10 PM [animeInfo] User picked: 1
+9:49:10 PM [animeInfo] Path 3b: Download action
+9:49:10 PM [animeInfo] Path 3b: Valid pick, processing download
+9:49:10 PM [animeInfo] Path 3b: Entry saved
+9:49:10 PM [animeInfo] Path 3b: current is 0, incrementing picked
+9:49:10 PM [animeInfo] Path 3b: Queue info prepared: {
+  "total": "1",
+  "ids": [
+    "552cdcf0-0243-0908-ef09-4e4feaf256f4/3933255ddcbbd20af4c6758a0b7e7a76faf9e758ff6d972f3baaab884b4c62e2"
+  ],
+  "name": "NieR:Automata Ver1.1a",
+  "id": "552cdcf0-0243-0908-ef09-4e4feaf256f4",
+  "episode": "1",
+  "img": "https://i.animepahe.pw/uploads/posters/fc1/fc1231d23a2bce66d50f739a57eee6828c97d0afb6e6a9895ba81cc7d4102041.webp"
+}
+9:49:10 PM [animeInfo] Path 3b: Calling episodeThenUpdate(-44)
+9:49:10 PM [getAnimepaheSources] Fetching: 552cdcf0-0243-0908-ef09-4e4feaf256f4/3933255ddcbbd20af4c6758a0b7e7a76faf9e758ff6d972f3baaab884b4c62e2
+9:49:12 PM [episodeThenUpdate] downloadEpisode returned
+9:49:12 PM [episodeThenUpdate] Tuple extracted - cache: NieR:Automata Ver1.1a queue: NieR:Automata Ver1.1a
+9:49:12 PM [episodeThenUpdate] Updating cache...
+9:49:12 PM [episodeThenUpdate] Cache updated
+9:49:12 PM [episodeThenUpdate] Updating queue...
+9:49:12 PM [episodeThenUpdate] Queue updated
+9:49:12 PM [episodeThenUpdate] Download path complete
+9:49:12 PM [animeInfo] Path 3b complete

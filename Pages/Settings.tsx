@@ -4,7 +4,7 @@ import {
   Section, Text, Toggle, useState, HStack, useEffect 
 } from "scripting"
 
-type VideoPlayerType = "nPlayer" | "Outplayer"
+type VideoPlayerType = "nPlayer" | "Outplayer" | "Built-in"
 type ProviderType = "Anilist" | "Animepahe"
 
 const QualitiesOrder = [
@@ -179,6 +179,7 @@ export function SettingsPage() {
             >
               <Text tag={"nPlayer"}>nPlayer</Text>
               <Text tag={"Outplayer"}>Outplayer</Text>
+              <Text tag={"Built-in"}>Built-in</Text>
             </Picker>
           </HStack>
         </Section>
