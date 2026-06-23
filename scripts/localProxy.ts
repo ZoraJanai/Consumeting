@@ -42,6 +42,17 @@ function parseHeaders(raw: string): Record<string, string> {
   }
 }
 
+// queryParams values may arrive percent-encoded; decode only when needed.
+function decodeUrlParam(v: string): string {
+  if (!v) return v
+  if (/^https?:\/\//i.test(v)) return v
+  try {
+    return decodeURIComponent(v)
+  } catch {
+    return v
+  }
+}
+
 /** Resolve a possibly-relative URL found in a playlist against its base. */
 function resolveUrl(ref: string, base: string): string {
   const r = (ref || "").trim()
@@ -106,7 +117,7 @@ function rewritePlaylist(text: string, baseM3u8: string, headers: Record<string,
 
 async function handleHls(req: any): Promise<any> {
   try {
-    const u = getQuery(req, "u")
+    const u = decodeUrlParam(getQuery(req, "u"))
     const headers = parseHeaders(getQuery(req, "h"))
     if (!u) {
       return HttpResponse.raw(400, "Bad Request", {
@@ -142,7 +153,7 @@ async function handleHls(req: any): Promise<any> {
 
 async function handleSeg(req: any): Promise<any> {
   try {
-    const u = getQuery(req, "u")
+    const u = decodeUrlParam(getQuery(req, "u"))
     const headers = parseHeaders(getQuery(req, "h"))
     if (!u) {
       return HttpResponse.raw(400, "Bad Request", {

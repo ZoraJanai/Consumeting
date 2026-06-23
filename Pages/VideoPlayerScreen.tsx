@@ -31,6 +31,7 @@ export type BuiltInPlayerOptions = {
 
 const SKIP_SECONDS = 10
 const AUTO_HIDE_MS = 4000
+const POLL_MS = 500
 
 function two(n: number): string {
   return (n < 10 ? "0" : "") + String(n)
@@ -51,13 +52,8 @@ function clamp(v: number, lo: number, hi: number): number {
   return v
 }
 
-function VideoPlayerScreen({ url, headers, title }: BuiltInPlayerOptions) {
+function VideoPlayerScreen({ src, title }: { src: string; title?: string }) {
   const dismiss = Navigation.useDismiss()
-  const player = useMemo(() => new AVPlayer(), [])
-  const ref = useMemo(
-    () => ({ interval: null as any, hideTimer: null as any, scrubbing: false }),
-    []
-  )
 
   const [isPlaying, setIsPlaying] = useState(false)
   const [buffering, setBuffering] = useState(true)
@@ -66,7 +62,20 @@ function VideoPlayerScreen({ url, headers, title }: BuiltInPlayerOptions) {
   const [aspectFill, setAspectFill] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [errorMsg, setErrorMsg] = useState<string | null>(src ? null : "No video source")
+
+  const ref = useMemo(
+    () => ({ timer: null as any, hideTimer: null as any, scrubbing: false, disposed: false }),
+    []
+  )
+
+  // Create the player and point it at the (already proxied) source synchronously
+  // so VideoPlayer always has a valid player at first render.
+  const player = useMemo(() => {
+    const p = new AVPlayer()
+    if (src) p.setSource(src)
+    return p
+  }, [])
 
   function clearHideTimer() {
     if (ref.hideTimer) {
@@ -142,7 +151,7 @@ function VideoPlayerScreen({ url, headers, title }: BuiltInPlayerOptions) {
   }
 
   useEffect(() => {
-    let disposed = false
+    ref.disposed = false
 
     try {
       SharedAudioSession.setActive(true)
@@ -157,57 +166,45 @@ function VideoPlayerScreen({ url, headers, title }: BuiltInPlayerOptions) {
     }
 
     player.onReadyToPlay = () => {
-      if (disposed) return
+      if (ref.disposed) return
       setDuration(player.duration || 0)
       setBuffering(false)
       player.play()
       setIsPlaying(true)
     }
     player.onTimeControlStatusChanged = (status: any) => {
-      if (disposed) return
+      if (ref.disposed) return
       setBuffering(status === TimeControlStatus.waitingToPlayAtSpecifiedRate)
       setIsPlaying(status === TimeControlStatus.playing)
     }
     player.onError = (message: string) => {
-      if (disposed) return
+      if (ref.disposed) return
       setErrorMsg(message || "Playback failed")
       setBuffering(false)
     }
     player.onEnded = () => {
-      if (disposed) return
+      if (ref.disposed) return
       setIsPlaying(false)
       revealControls()
     }
 
-    ;(async () => {
-      try {
-        await ensureHlsProxy()
-        if (disposed) return
-        const source = proxiedPlaylistUrl(url, headers || {})
-        if (!player.setSource(source)) {
-          setErrorMsg("Could not load source")
-          setBuffering(false)
-        }
-      } catch (e) {
-        if (!disposed) {
-          setErrorMsg(String(e))
-          setBuffering(false)
-        }
+    // Scripting has no setInterval — self-reschedule a setTimeout instead.
+    const poll = () => {
+      if (ref.disposed) return
+      if (!ref.scrubbing) {
+        setCurrent(player.currentTime || 0)
+        const d = player.duration || 0
+        setDuration(prev => (d && Math.abs(prev - d) > 0.5 ? d : prev))
       }
-    })()
-
-    ref.interval = setInterval(() => {
-      if (ref.scrubbing) return
-      setCurrent(player.currentTime || 0)
-      const d = player.duration || 0
-      setDuration(prev => (d && Math.abs(prev - d) > 0.5 ? d : prev))
-    }, 500)
+      ref.timer = setTimeout(poll, POLL_MS)
+    }
+    ref.timer = setTimeout(poll, POLL_MS)
 
     scheduleHide()
 
     return () => {
-      disposed = true
-      if (ref.interval) clearInterval(ref.interval)
+      ref.disposed = true
+      if (ref.timer) clearTimeout(ref.timer)
       clearHideTimer()
       try {
         Device.setWakeLockEnabled(false)
@@ -384,9 +381,17 @@ function VideoPlayerScreen({ url, headers, title }: BuiltInPlayerOptions) {
 }
 
 /** Present the built-in OutPlayer-style player full screen. */
-export function presentBuiltInPlayer(opts: BuiltInPlayerOptions) {
+export async function presentBuiltInPlayer(opts: BuiltInPlayerOptions) {
+  let src = ""
+  try {
+    await ensureHlsProxy()
+    src = proxiedPlaylistUrl(opts.url, opts.headers || {})
+  } catch (e) {
+    console.error("[VideoPlayerScreen] proxy failed:", String(e))
+  }
+
   Navigation.present({
-    element: <VideoPlayerScreen url={opts.url} headers={opts.headers} title={opts.title} />,
+    element: <VideoPlayerScreen src={src} title={opts.title} />,
     modalPresentationStyle: "fullScreen",
   })
 }
