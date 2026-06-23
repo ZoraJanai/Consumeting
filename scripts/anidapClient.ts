@@ -3,6 +3,7 @@
 import { fetch } from "scripting"
 
 const BASE = "https://anidap.se"
+const API = "https://chad.anidap.se/rest/api"
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
@@ -263,7 +264,7 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
 // ─────────────────────────────────────────────
 
 export async function anidapFetchEpisodes(slug: string): Promise<AnidapEpisode[]> {
-  const url = `${BASE}/api/anime/${slug}/episodes`
+  const url = `${API}/episodes?id=${slug}`
   const res = await fetch(url, { headers: anidapHeaders(`${BASE}/watch?id=${slug}&ep=1`) })
   if (!res.ok) {
     const body = await res.text().catch(() => "(unreadable)")
@@ -294,7 +295,7 @@ export interface AnidapServer {
 
 export async function anidapFetchServers(slug: string, ep: number): Promise<AnidapServer[]> {
   const referer = `${BASE}/watch?id=${slug}&ep=${ep}&type=sub`
-  const url = `${BASE}/api/anime/servers?id=${slug}&ep=${ep}`
+  const url = `${API}/servers?id=${slug}&ep=${ep}`
   const res = await fetch(url, { headers: anidapHeaders(referer) })
   if (!res.ok) throw new Error(`[anidap] servers failed: ${res.status}`)
 
@@ -335,7 +336,7 @@ export async function anidapFetchSources(
 
     try {
       const referer = `${BASE}/watch?id=${slug}&ep=${ep}&type=${srv.type}&provider=${srv.name}`
-      const url = `${BASE}/api/anime/sources?id=${slug}&ep=${ep}&host=${srv.name}&type=${srv.type}`
+      const url = `${API}/sources?id=${slug}&ep=${ep}&host=${srv.name}&type=${srv.type}`
       const res = await fetch(url, { headers: anidapHeaders(referer) })
       if (!res.ok) continue
 
