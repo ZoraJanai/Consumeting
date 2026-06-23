@@ -227,6 +227,8 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
 
     slug = animeData?.slug ?? animeData?.anidapId ?? animeData?.id ?? ""
     title =
+      animeData?.titleEnglish ||
+      animeData?.titleRomaji ||
       animeData?.title?.english ||
       animeData?.title?.romaji ||
       animeData?.title?.native ||
@@ -239,6 +241,13 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
       animeData?.bannerImage ||
       animeData?.image ||
       ""
+
+    // The info response sometimes embeds a pre-resolved episode list — log it so we can use it
+    if (animeData?.episodes) {
+      console.log("[anidap] embedded episodes type:", typeof animeData.episodes,
+        Array.isArray(animeData.episodes) ? "len=" + animeData.episodes.length : "",
+        JSON.stringify(animeData.episodes).substring(0, 200))
+    }
   } else if (raw && typeof raw === "object") {
     slug = raw.slug || raw.anidapId || raw.id || ""
     title = raw.title?.english || raw.title?.romaji || raw.title || raw.name || slug
@@ -254,9 +263,12 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
 // ─────────────────────────────────────────────
 
 export async function anidapFetchEpisodes(slug: string): Promise<AnidapEpisode[]> {
-  const url = `${BASE}/api/anime/${slug}/episodes?refresh=false`
+  const url = `${BASE}/api/anime/${slug}/episodes`
   const res = await fetch(url, { headers: anidapHeaders(`${BASE}/watch?id=${slug}&ep=1`) })
-  if (!res.ok) throw new Error(`[anidap] episodes failed: ${res.status}`)
+  if (!res.ok) {
+    const body = await res.text().catch(() => "(unreadable)")
+    throw new Error(`[anidap] episodes failed: ${res.status} — ${body.substring(0, 300)}`)
+  }
 
   const raw = await res.json()
   const list: any[] = Array.isArray(raw) ? raw : (raw.episodes || raw.data || [])
