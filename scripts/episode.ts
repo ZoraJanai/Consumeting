@@ -11,6 +11,18 @@ import {
   paheFetchStreamingSourcesFromApi,
 } from "./animepaheClient"
 import { paheHeaders } from "./animepaheSession"
+import { presentBuiltInPlayer } from "../Pages/VideoPlayerScreen"
+
+const KWIK_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+
+function kwikPlaybackHeaders(): Record<string, string> {
+  return {
+    Referer: "https://kwik.cx/",
+    Origin: "https://kwik.cx",
+    "User-Agent": KWIK_USER_AGENT,
+  }
+}
 
 // ---- Types ----
 
@@ -294,7 +306,7 @@ export async function getEpisode(
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
   console.log("[getEpisode] Quality order:", order);
   
-  const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
+  const player = loadSetting<string>(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
   console.log("[getEpisode] Player:", player);
 
   const episodeId = entry.ids[index - 1]
@@ -351,14 +363,23 @@ export async function getEpisode(
   console.log("[getEpisode] Hiding overlay");
   hideOverlay()
 
-  const rustProxyBase = getRustProxyUrl()
-  const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(selectedUrl)}&origin=https://kwik.cx`
-  const finalUrl = player === "nPlayer" ? "-" + proxyUrl : "://" + proxyUrl
-  console.log("[getEpisode] Proxy URL:", proxyUrl);
-  console.log("[getEpisode] Final URL:", (player + finalUrl).toLowerCase());
-  console.log("[getEpisode] Opening in Safari...");
-  await Safari.openURL((player + finalUrl).toLowerCase())
-  console.log("[getEpisode] Safari opened");
+  if (player === "Built-in") {
+    console.log("[getEpisode] Opening built-in player");
+    presentBuiltInPlayer({
+      url: selectedUrl,
+      headers: kwikPlaybackHeaders(),
+      title: `${entry.name} — ${index}`,
+    })
+  } else {
+    const rustProxyBase = getRustProxyUrl()
+    const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(selectedUrl)}&origin=https://kwik.cx`
+    const finalUrl = player === "nPlayer" ? "-" + proxyUrl : "://" + proxyUrl
+    console.log("[getEpisode] Proxy URL:", proxyUrl);
+    console.log("[getEpisode] Final URL:", (player + finalUrl).toLowerCase());
+    console.log("[getEpisode] Opening in Safari...");
+    await Safari.openURL((player + finalUrl).toLowerCase())
+    console.log("[getEpisode] Safari opened");
+  }
 
   const stillUnread = index !== Number(entry.total)
   console.log("[getEpisode] Still unread:", stillUnread);
