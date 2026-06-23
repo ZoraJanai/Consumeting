@@ -7,6 +7,7 @@ import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
+import { anidapFetchServers, anidapFetchSources } from "./anidapClient"
 
 
 
@@ -110,6 +111,24 @@ export async function getAnimepaheSources(id: string): Promise<QualityMap> {
   }
   //console.log(dict)
   return dict
+}
+
+// ---- 1b. Get Anidap Sources ----
+// Episode ID format: "anidap:{slug}:{episodeNumber}"
+export async function getAnidapSources(episodeId: string): Promise<QualityMap> {
+  const parts = episodeId.split(":")
+  // parts = ["anidap", slug, epNumber]
+  const slug = parts.slice(1, -1).join(":")
+  const ep = Number(parts[parts.length - 1])
+  if (!slug || isNaN(ep)) throw new Error(`[anidap] invalid episode id: ${episodeId}`)
+
+  const servers = await anidapFetchServers(slug, ep)
+  if (!servers.length) throw new Error(`[anidap] no servers found for ep ${ep}`)
+
+  const sources = await anidapFetchSources(slug, ep, servers)
+  if (!Object.keys(sources).length) throw new Error(`[anidap] no sources decrypted for ep ${ep}`)
+
+  return sources
 }
 
 // ---- 2. Pick First Match From Quality Order ----
@@ -218,12 +237,28 @@ export async function getEpisode(
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
   const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
 
-  const sources = await getAnimepaheSources(entry.ids[index - 1])        // tag -> url
+  const episodeId = entry.ids[index - 1]
+  const isAnidap = episodeId?.startsWith("anidap:")
+  const sources = isAnidap
+    ? await getAnidapSources(episodeId)
+    : await getAnimepaheSources(episodeId)        // tag -> url
   const tags = Object.keys(sources)
 
   let selectedUrl: string | undefined
 
-  if (autoQuality) {
+  if (isAnidap) {
+    // Anidap: prefer -sub, then -dub, then -hsub; fall back to first available
+    selectedUrl =
+      sources["-sub"] ??
+      sources["-dub"] ??
+      sources["-hsub"] ??
+      sources[tags[0]]
+    // Still let user pick if they turned off auto-quality
+    if (!autoQuality && askQuality) {
+      const pickedTag = await askQuality(tags)
+      selectedUrl = sources[pickedTag]
+    }
+  } else if (autoQuality) {
     // try auto by current order
     selectedUrl = qualityAutoSelect(sources, order)
     if (!selectedUrl) {
@@ -233,16 +268,15 @@ export async function getEpisode(
 
       // persist: put pickedTag at the front of order
       const filtered = order.filter(q => q !== pickedTag)
-const newOrder = [
-  ...filtered.slice(0, 2),   // keep first two as-is
-  pickedTag,                 // insert chosen tag here
-  ...filtered.slice(2)       // rest
-]
+      const newOrder = [
+        ...filtered.slice(0, 2),
+        pickedTag,
+        ...filtered.slice(2),
+      ]
+      saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
+      order = newOrder
 
-saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
-order = newOrder
-
-      selectedUrl = sources[pickedTag]   // must exist because it came from `tags`
+      selectedUrl = sources[pickedTag]
     }
   } else {
     if (!askQuality) throw new Error("askQuality callback not provided")
@@ -250,12 +284,20 @@ order = newOrder
     selectedUrl = sources[pickedTag]
   }
 
-  // Build HLS
-  const hls = await kwikExtractor(String(selectedUrl))
+  if (!selectedUrl) throw new Error("[episode] could not determine stream URL")
+
   hideOverlay()
 
-  const finalUrl = player === "nPlayer" ? "-" + hls : hls.replace("https", "")
-  //console.log((player + finalUrl).toLowerCase())
+  let streamUrl: string
+  if (isAnidap) {
+    // Anidap sources are already wrapped with cors.otakuu.se proxy — open directly
+    streamUrl = String(selectedUrl)
+  } else {
+    // Animepahe: extract HLS from kwik
+    streamUrl = await kwikExtractor(String(selectedUrl))
+  }
+
+  const finalUrl = player === "nPlayer" ? "-" + streamUrl : streamUrl.replace("https", "")
   await Safari.openURL((player + finalUrl).toLowerCase())
 
   const stillUnread = index !== Number(entry.total)

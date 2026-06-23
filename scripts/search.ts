@@ -1,4 +1,5 @@
 import { fetch } from "scripting"
+import { anidapResolveSlug, anidapFetchEpisodes } from "./anidapClient"
 
 // Type definitions
 type ProviderType = "animepahe" | string
@@ -232,12 +233,44 @@ const getInfoAnimepahe = async (anime: Anime): Promise<BaseInfo> => {
   }
 }
 
+// Get anime info from Anidap
+const getInfoAnidap = async (anime: Anime): Promise<BaseInfo> => {
+  try {
+    const info = await anidapResolveSlug(anime.source)
+    const episodes = await anidapFetchEpisodes(info.slug)
+
+    const ids: string[] = []
+    let totalEP = 0
+    for (const ep of episodes) {
+      if (Math.ceil(ep.number) === ep.number && ep.number > 0) {
+        ids.push(`anidap:${info.slug}:${ep.number}`)
+        totalEP++
+      }
+    }
+
+    const output: BaseInfo = {
+      total: String(totalEP),
+      ids,
+      name: info.title || anime.name,
+      id: `anidap:${info.slug}`,
+      episode: "none",
+      img: info.image || anime.img,
+    }
+    console.log("[anidap] getInfoAnidap:", output)
+    return output
+  } catch (error) {
+    console.error("Error in getInfoAnidap:", error)
+    throw error
+  }
+}
+
 // Export all functions
 export {
   searchAnilist,
   getInfoAnilist,
   searchAnimepahe,
   getInfoAnimepahe,
+  getInfoAnidap,
   type TitlesMap,
   type BaseInfo,
   type ProviderType

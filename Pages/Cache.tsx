@@ -4,7 +4,7 @@ import {
 } from "scripting"
 
 import { NumberInputSheet } from "./numberPopout"
-import { getInfoAnilist, getInfoAnimepahe } from "../scripts/search"
+import { getInfoAnilist, getInfoAnimepahe, getInfoAnidap } from "../scripts/search"
 import { downloadEpisode, episodeNumber, getEpisode, QualitiesOrder } from "../scripts/episode"
 import { getCache, getQueue, saveCache, saveQueue, addCache, addQueue } from "../scripts/cache"
 import { hideOverlay, showOverlay } from "./Loading"
@@ -67,10 +67,22 @@ function saveSetting(key: string, value: any) {
 
 export async function chosenAnime(anime: Anime) {
   let info
-  if (anime.source.includes("-")) {
+  // Detect provider: anidap entries already resolved have "anidap:" prefix;
+  // fresh AniList results (numeric source) route via settings.provider.
+  if (anime.source.startsWith("anidap:")) {
+    info = await getInfoAnidap(anime)
+  } else if (anime.source.includes("-")) {
     info = await getInfoAnimepahe(anime)
   } else {
-    info = await getInfoAnilist(anime)
+    // Numeric AniList ID — check active provider
+    const provider: string = Storage.contains("settings.provider")
+      ? (Storage.get<string>("settings.provider") ?? "Anilist")
+      : "Anilist"
+    if (provider === "Anidap") {
+      info = await getInfoAnidap(anime)
+    } else {
+      info = await getInfoAnilist(anime)
+    }
   }
   saveSetting("entry", info)
   return info

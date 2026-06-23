@@ -36,7 +36,7 @@ export type DownloadAnimeType = {
   isUnread: boolean
 }
 
-type ProviderType = 'Anilist' | 'Animepahe'
+type ProviderType = 'Anilist' | 'Animepahe' | 'Anidap'
 
 const PlaceholderAnime: Anime = {
   name: "Name of Anime",
@@ -212,9 +212,10 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
 
     const handle = setTimeout(async () => {
       try {
-        const raw = provider === "Anilist"
-          ? await searchAnilist(q.toLowerCase())
-          : await searchAnimepahe(q.toLowerCase())
+        // Anidap uses AniList search (results carry numeric AniList IDs used for slug resolution)
+        const raw = provider === "Animepahe"
+          ? await searchAnimepahe(q.toLowerCase())
+          : await searchAnilist(q.toLowerCase())
 
         if (cancelled) return
         setResults(typeof raw === "string" ? [] : (raw as Anime[]))
@@ -449,6 +450,7 @@ function cleanupAfterQualityCancel() {
                 >
                   <Text tag={"Anilist"}>Anilist</Text>
                   <Text tag={"Animepahe"}>Animepahe</Text>
+                  <Text tag={"Anidap"}>Anidap</Text>
                 </Picker>
               </HStack>
             }>

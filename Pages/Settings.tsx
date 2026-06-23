@@ -5,7 +5,7 @@ import {
 } from "scripting"
 
 type VideoPlayerType = "nPlayer" | "Outplayer"
-type ProviderType = "Anilist" | "Animepahe"
+type ProviderType = "Anilist" | "Animepahe" | "Anidap"
 
 const QualitiesOrder = [
   "-1080p BD", "-1080p", "-816p chi", "-720p",
@@ -194,6 +194,7 @@ export function SettingsPage() {
             >
               <Text tag={"Anilist"}>Anilist</Text>
               <Text tag={"Animepahe"}>Animepahe</Text>
+              <Text tag={"Anidap"}>Anidap</Text>
             </Picker>
           </HStack>
         </Section>
