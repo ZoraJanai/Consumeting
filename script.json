@@ -7,11 +7,7 @@
   ],
   "icon" : "livephoto",
   "description" : "",
-<<<<<<< Updated upstream
-  "version" : "1.5.0",
-=======
   "version" : "3.0.0",
->>>>>>> Stashed changes
   "color" : "rgba(238, 92, 98,1)",
   "remoteResource" : {
     "url" : "https:\/\/github.com\/ZoraJanai\/Consumeting",

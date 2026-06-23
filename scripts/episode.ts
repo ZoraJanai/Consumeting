@@ -7,11 +7,6 @@ import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
-<<<<<<< Updated upstream
-
-
-
-=======
 import {
   directFetchPlayPage,
   getDirectBaseUrl,
@@ -30,7 +25,6 @@ function kwikPlaybackHeaders(): Record<string, string> {
     "User-Agent": KWIK_USER_AGENT,
   }
 }
->>>>>>> Stashed changes
 
 // ---- Types ----
 
@@ -237,14 +231,12 @@ export async function getEpisode(
   const entry = loadSetting("entry", PlaceholderEntry)
   const autoQuality = loadSetting(STORAGE_KEYS.AUTO_QUALITY, true)
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
-<<<<<<< Updated upstream
-  const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
-=======
+
   console.log("[getEpisode] Quality order:", order);
   
   const player = loadSetting<string>(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
   console.log("[getEpisode] Player:", player);
->>>>>>> Stashed changes
+
 
   const sources = await getAnimepaheSources(entry.ids[index - 1])        // tag -> url
   const tags = Object.keys(sources)
@@ -282,11 +274,6 @@ order = newOrder
   const hls = await kwikExtractor(String(selectedUrl))
   hideOverlay()
 
-<<<<<<< Updated upstream
-  const finalUrl = player === "nPlayer" ? "-" + hls : hls.replace("https", "")
-  //console.log((player + finalUrl).toLowerCase())
-  await Safari.openURL((player + finalUrl).toLowerCase())
-=======
   if (player === "Built-in") {
     console.log("[getEpisode] Opening built-in player");
     presentBuiltInPlayer({
@@ -304,7 +291,7 @@ order = newOrder
     await Safari.openURL((player + finalUrl).toLowerCase())
     console.log("[getEpisode] Safari opened");
   }
->>>>>>> Stashed changes
+
 
   const stillUnread = index !== Number(entry.total)
   const cacheEntry: Anime = {
