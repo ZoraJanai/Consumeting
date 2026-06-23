@@ -170,7 +170,15 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
   const res = await fetch(url, { headers: anidapHeaders() })
   if (!res.ok) throw new Error(`[anidap] info failed: ${res.status}`)
 
-  const raw = await res.json()
+  const text = await res.text()
+  console.log("[anidap] info raw response:", text.substring(0, 500))
+
+  let raw: any
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    throw new Error(`[anidap] info response is not JSON: ${text.substring(0, 200)}`)
+  }
 
   // "dehydrated JSON array" — try both array and object shapes
   let slug = ""
@@ -178,18 +186,25 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
   let image: string | undefined
 
   if (Array.isArray(raw)) {
-    // expected: [slug, { title: { en, romaji, native }, image?, ... }]
-    slug = typeof raw[0] === "string" ? raw[0] : ""
-    const meta = raw[1] ?? {}
-    title = meta?.title?.en || meta?.title?.romaji || meta?.title || meta?.name || slug
-    image = meta?.image || meta?.coverImage?.large || meta?.bannerImage
+    // Walk the array looking for a slug-like string and a metadata object
+    for (let i = 0; i < raw.length; i++) {
+      if (!slug && typeof raw[i] === "string" && raw[i].includes("-")) {
+        slug = raw[i]
+      }
+      if (!title && raw[i] && typeof raw[i] === "object") {
+        const meta = raw[i]
+        title = meta?.title?.en || meta?.title?.romaji || meta?.title || meta?.name || ""
+        image = meta?.image || meta?.coverImage?.large || meta?.bannerImage
+      }
+    }
+    if (!title && slug) title = slug
   } else if (raw && typeof raw === "object") {
-    slug = raw.slug || raw.id || ""
+    slug = raw.slug || raw.id || raw.anidapId || ""
     title = raw.title?.en || raw.title?.romaji || raw.title || raw.name || slug
     image = raw.image || raw.coverImage?.large || raw.bannerImage
   }
 
-  if (!slug) throw new Error(`[anidap] could not extract slug from response`)
+  if (!slug) throw new Error(`[anidap] could not extract slug from response: ${text.substring(0, 300)}`)
   return { slug, title, image }
 }
 
