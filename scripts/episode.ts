@@ -101,24 +101,106 @@ function useApiMode(): boolean {
   return loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "").trim().length > 0
 }
 
-async function extractKwikUrl(kwikUrl: string): Promise<string> {
+// ─── Kwik decrypt (ported from Aniyomi KwikExtractor.kt) ───────────────────
+// Decodes the obfuscated form params hidden in the Kwik page HTML.
+// The pattern ("fullString", ignored, "key", v1, v2, ignored) encodes
+// the form action + _token using a custom base-v2 cipher keyed on `key`.
+function kwikDecrypt(fullString: string, key: string, v1: number, v2: number): string {
+  // Map each character in key to its first occurrence index
+  const keyMap = new Map<string, number>()
+  for (let i = 0; i < key.length; i++) {
+    if (!keyMap.has(key[i])) keyMap.set(key[i], i)
+  }
+
+  const delimiter = key[v2]   // separator between encoded characters
+  let result = ""
+  let i = 0
+
+  while (i < fullString.length) {
+    const next = fullString.indexOf(delimiter, i)
+    if (next === -1) break
+
+    // Each digit in the encoded segment is a key-index; build a base-v2 number string
+    let digits = ""
+    for (let j = i; j < next; j++) {
+      const idx = keyMap.get(fullString[j])
+      digits += (idx !== undefined ? idx : -1).toString()
+    }
+    i = next + 1
+
+    const code = parseInt(digits, v2) - v1
+    if (isNaN(code)) break
+    result += String.fromCharCode(code)
+  }
+  return result
+}
+
+// ─── MP4 extractor (primary path) ──────────────────────────────────────────
+// Fetches the Kwik page, decrypts the hidden form, POSTs to get the
+// 302 Location redirect = direct signed MP4/stream CDN URL.
+async function extractKwikMp4Url(kwikUrl: string): Promise<string> {
+  const html = await (await fetch(kwikUrl, {
+    headers: paheHeaders({ referer: getDirectBaseUrl() + "/", mode: "navigate" }),
+  })).text()
+
+  // Find encrypted params: ("fullString", ignored, "key", v1, v2, ignored)
+  const pm = /\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)/.exec(html)
+  if (!pm) throw new Error("[kwikMp4] decrypt params not found")
+
+  const decrypted = kwikDecrypt(pm[1], pm[2], parseInt(pm[3], 10), parseInt(pm[4], 10))
+
+  const action = /action="([^"]+)"/.exec(decrypted)?.[1]
+  const token  = /value="([^"]+)"/.exec(decrypted)?.[1]
+  if (!action || !token) throw new Error(`[kwikMp4] form parse failed: ${decrypted.substring(0, 200)}`)
+
+  // POST → CDN redirect; capture final URL without reading body
+  const postRes = await fetch(action, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Origin": "https://kwik.cx",
+      "Referer": kwikUrl,
+    },
+    body: `_token=${encodeURIComponent(token)}`,
+    // redirect:"follow" lets iOS URLSession chase the 302; response.url = CDN URL
+    redirect: "follow",
+  })
+
+  // response.url is the final URL after all redirects (the signed CDN link)
+  const finalUrl = postRes.url
+  if (!finalUrl || finalUrl === action) throw new Error(`[kwikMp4] no redirect (status ${postRes.status})`)
+
+  return finalUrl
+}
+
+// ─── HLS extractor (fallback) ───────────────────────────────────────────────
+async function extractKwikHlsUrl(kwikUrl: string): Promise<string> {
   const response = await fetch(kwikUrl, {
     headers: paheHeaders({ referer: getDirectBaseUrl() + "/", mode: "navigate" }),
   })
-
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`)
-  }
+  if (!response.ok) throw new Error(`[kwikHls] fetch failed: ${response.status}`)
 
   const html = await response.text()
   const packedMatch = /(eval)(\(f.*?)(\n<\/script>)/s.exec(html)
-  if (!packedMatch) throw new Error("Could not find packed script")
+  if (!packedMatch) throw new Error("[kwikHls] packed script not found")
 
   const unpacked = eval(packedMatch[2].replace("eval", ""))
   const m3u8Match = unpacked.match(/https.*?m3u8/)
-  if (!m3u8Match) throw new Error("Could not find m3u8 URL")
+  if (!m3u8Match) throw new Error("[kwikHls] m3u8 URL not found")
 
   return m3u8Match[0]
+}
+
+// ─── Unified extractor: MP4 first, HLS fallback ────────────────────────────
+async function extractKwikUrl(kwikUrl: string): Promise<string> {
+  try {
+    const mp4Url = await extractKwikMp4Url(kwikUrl)
+    console.log("[kwik] MP4 URL:", mp4Url.substring(0, 80))
+    return mp4Url
+  } catch (mp4Err) {
+    console.error("[kwik] MP4 failed, falling back to HLS:", String(mp4Err))
+    return extractKwikHlsUrl(kwikUrl)
+  }
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -351,12 +433,21 @@ export async function getEpisode(
   console.log("[getEpisode] Hiding overlay");
   hideOverlay()
 
-  const rustProxyBase = getRustProxyUrl()
-  const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(selectedUrl)}&origin=https://kwik.cx`
-  const finalUrl = player === "nPlayer" ? "-" + proxyUrl : "://" + proxyUrl
-  console.log("[getEpisode] Proxy URL:", proxyUrl);
-  console.log("[getEpisode] Final URL:", (player + finalUrl).toLowerCase());
-  console.log("[getEpisode] Opening in Safari...");
+  // selectedUrl is the direct signed CDN URL from the MP4 extractor (no proxy needed).
+  // If MP4 failed and we fell back to HLS, wrap with rust proxy for header injection.
+  const isHls = selectedUrl.includes(".m3u8")
+  let openUrl: string
+  if (isHls) {
+    const rustProxyBase = getRustProxyUrl()
+    openUrl = `${rustProxyBase}/?url=${encodeURIComponent(selectedUrl)}&origin=https://kwik.cx`
+    console.log("[getEpisode] HLS fallback — proxy URL:", openUrl);
+  } else {
+    openUrl = selectedUrl
+    console.log("[getEpisode] Direct MP4 URL:", openUrl.substring(0, 80));
+  }
+
+  const finalUrl = player === "nPlayer" ? "-" + openUrl : "://" + openUrl
+  console.log("[getEpisode] Opening in player:", (player + finalUrl).substring(0, 80));
   await Safari.openURL((player + finalUrl).toLowerCase())
   console.log("[getEpisode] Safari opened");
 
@@ -437,12 +528,14 @@ export async function downloadEpisode(
       }
     }
 
-    // url is already the HLS m3u8 URL, wrap it with proxy
-    // Encode URL parameter for the proxy (this is required for the proxy to work)
-    const rustProxyBase = getRustProxyUrl()
-    const proxyUrl = `${rustProxyBase}/?url=${encodeURIComponent(url)}&origin=https://kwik.cx`
     const number = Number(entry.episode) + i
-    const link = `ffmpeg -i "${proxyUrl}" -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`
+    // If extractKwikUrl returned an HLS m3u8 (fallback), wrap with rust proxy.
+    // If it returned a direct MP4 CDN URL, use it directly — no proxy needed.
+    const isHls = url.includes(".m3u8")
+    const dlUrl = isHls
+      ? `${getRustProxyUrl()}/?url=${encodeURIComponent(url)}&origin=https://kwik.cx`
+      : url
+    const link = `ffmpeg -i "${dlUrl}" -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`
     links.push(link)
 
     onProgress?.(i + 1, total)
