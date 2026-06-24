@@ -169,94 +169,49 @@ export interface AnidapEpisode {
 export async function anidapResolveSlug(anilistId: string | number): Promise<AnidapInfo> {
   const url = `${BASE}/info/${anilistId}.data`
   const res = await fetch(url, { headers: anidapHeaders() })
-  if (!res.ok) throw new Error(`[anidap] info failed: ${res.status}`)
+  if (!res.ok) throw new Error(`[anidap] info fetch failed: ${res.status}`)
 
   const text = await res.text()
-  console.log("[anidap] info raw response:", text.substring(0, 3000))
+  console.log("[anidap] info raw response:", text.substring(0, 500))
 
-  let raw: any
-  try {
-    raw = JSON.parse(text)
-  } catch {
-    throw new Error(`[anidap] info response is not JSON: ${text.substring(0, 200)}`)
-  }
+  // The RSC payload is a streaming reference-graph array. The actual animeData
+  // is behind a Suspense boundary (negative index = pending), but requestedId
+  // always resolves and contains the slug as "anidap:<slug>".
+  // Fastest extraction: regex for the anidap: prefix pattern anywhere in the payload.
+  const slugMatch = /"anidap:([a-z0-9][a-z0-9-]+)"/.exec(text)
+  if (!slugMatch) throw new Error(`[anidap] could not extract slug from response: ${text.substring(0, 300)}`)
 
-  // Decode Next.js RSC dehydrated reference-graph array.
-  // Format: flat array where objects use {"_N": M} meaning
-  //   property(name=arr[N]) = arr[M].
-  // We fully resolve the graph into a plain JS object, then extract the slug.
-  let slug = ""
-  let title = ""
-  let image: string | undefined
+  const slug = slugMatch[1]
+  console.log("[anidap] extracted slug:", slug)
 
-  if (Array.isArray(raw)) {
-    // Resolve a node: if it's an object with _N keys, rebuild with resolved keys/values
-    function resolve(node: any, visited = new Set<number>()): any {
-      if (node === null || typeof node !== "object" || Array.isArray(node)) return node
-      const out: Record<string, any> = {}
-      for (const k of Object.keys(node)) {
-        const nameIdx = Number(k.replace("_", ""))
-        const valIdx: number = node[k]
-        if (isNaN(nameIdx) || typeof valIdx !== "number") {
-          out[k] = node[k]
-          continue
-        }
-        const name = raw[nameIdx]
-        const val = raw[valIdx]
-        if (visited.has(valIdx)) {
-          out[String(name)] = "<circular>"
-          continue
-        }
-        visited.add(valIdx)
-        out[String(name)] = resolve(val, visited)
-        visited.delete(valIdx)
-      }
-      return out
-    }
-
-    // The top-level object is at index 0; resolve it to get the full tree
-    const tree = resolve(raw[0])
-    console.log("[anidap] resolved tree keys:", JSON.stringify(Object.keys(tree)).substring(0, 300))
-
-    // Navigate: tree["routes/info/page"]["data"]["animeData"]
-    const routeKey = Object.keys(tree).find(k => k.includes("info"))
-    const routeData = routeKey ? tree[routeKey] : tree
-    const data = routeData?.data ?? routeData
-    const animeData = data?.animeData ?? data
-
-    console.log("[anidap] animeData keys:", JSON.stringify(Object.keys(animeData ?? {})).substring(0, 300))
-
-    slug = animeData?.slug ?? animeData?.anidapId ?? animeData?.id ?? ""
-    title =
-      animeData?.titleEnglish ||
-      animeData?.titleRomaji ||
-      animeData?.title?.english ||
-      animeData?.title?.romaji ||
-      animeData?.title?.native ||
-      animeData?.title ||
-      animeData?.name ||
-      ""
-    image =
-      animeData?.coverImage?.extraLarge ||
-      animeData?.coverImage?.large ||
-      animeData?.bannerImage ||
-      animeData?.image ||
-      ""
-
-    // The info response sometimes embeds a pre-resolved episode list — log it so we can use it
-    if (animeData?.episodes) {
-      console.log("[anidap] embedded episodes type:", typeof animeData.episodes,
-        Array.isArray(animeData.episodes) ? "len=" + animeData.episodes.length : "",
-        JSON.stringify(animeData.episodes).substring(0, 200))
-    }
-  } else if (raw && typeof raw === "object") {
-    slug = raw.slug || raw.anidapId || raw.id || ""
-    title = raw.title?.english || raw.title?.romaji || raw.title || raw.name || slug
-    image = raw.coverImage?.large || raw.bannerImage || raw.image
-  }
-
-  if (!slug) throw new Error(`[anidap] could not extract slug from response: ${text.substring(0, 300)}`)
+  // Fetch full info from REST API now that we have the slug
+  const { title, image } = await anidapFetchInfo(slug)
   return { slug, title, image }
+}
+
+async function anidapFetchInfo(slug: string): Promise<{ title: string; image?: string }> {
+  const url = `${API}/info?id=${slug}`
+  try {
+    const res = await fetch(url, { headers: anidapHeaders(`${BASE}/info/${slug}`) })
+    if (!res.ok) {
+      console.log("[anidap] REST info not available:", res.status, "— using slug as title")
+      return { title: slug }
+    }
+    const raw = await res.json()
+    const d = raw.data ?? raw
+    console.log("[anidap] REST info keys:", JSON.stringify(Object.keys(d ?? {})).substring(0, 200))
+    const title =
+      d?.titleEnglish || d?.titleRomaji ||
+      d?.title?.english || d?.title?.romaji || d?.title?.native ||
+      d?.title || d?.name || slug
+    const image =
+      d?.coverImage?.extraLarge || d?.coverImage?.large ||
+      d?.bannerImage || d?.image || undefined
+    return { title, image }
+  } catch (err) {
+    console.log("[anidap] REST info error:", String(err), "— using slug as title")
+    return { title: slug }
+  }
 }
 
 // ─────────────────────────────────────────────
