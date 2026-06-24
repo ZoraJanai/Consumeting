@@ -384,6 +384,8 @@ export async function downloadEpisode(
   onStart?.(total)
 
   const safeName = sanitizeFilename(entry.name)
+  // Escape all shell-special chars; alphanumerics, dash, dot, underscore, colon, equals, @ are safe unquoted
+  const escapedName = safeName.replace(/([^a-zA-Z0-9.\-_:=@])/g, '\\$1')
   const links: string[] = [`mkdir "${safeName}"`]
 
   let chosenTag: string | null = null
@@ -425,7 +427,7 @@ export async function downloadEpisode(
 
     const number = Number(entry.episode) + i
     links.push(`python3 hls_fix.py "${url}"`)
-    links.push(`ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`)
+    links.push(`ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`)
 
     onProgress?.(i + 1, total)
   }
