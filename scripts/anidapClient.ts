@@ -138,7 +138,7 @@ function anidapHeaders(referer?: string): Record<string, string> {
   }
 }
 
-async function anidapFetch(url: string, referer?: string, timeoutMs = 12000): Promise<Response> {
+async function anidapFetch(url: string, referer?: string, timeoutMs = 25000): Promise<Response> {
   console.log("[anidap] fetch:", url)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -396,6 +396,21 @@ export async function anidapFetchSourcesByProvider(
   return await anidapExtractQualities(masterSrc.url as string)
 }
 
+// Resolve a (possibly relative) HLS URL against the master playlist URL
+// without using the `URL` constructor (not available in iOS Scripting).
+function _resolveHlsUrl(href: string, base: string): string {
+  if (href.startsWith("https://") || href.startsWith("http://")) return href
+  if (href.startsWith("//")) return "https:" + href
+  if (href.startsWith("/")) {
+    // absolute path — extract origin from base
+    const originMatch = /^(https?:\/\/[^/]+)/.exec(base)
+    return originMatch ? originMatch[1] + href : href
+  }
+  // relative path — strip filename from base directory
+  const dir = base.substring(0, base.lastIndexOf("/") + 1)
+  return dir + href
+}
+
 // ─────────────────────────────────────────────
 // Parse a master HLS playlist to extract quality variants
 // Returns variants sorted highest bandwidth first
@@ -426,9 +441,7 @@ export async function anidapExtractQualities(masterUrl: string): Promise<AnidapQ
     const nextLine = lines[i + 1]?.trim()
     if (!nextLine || nextLine.startsWith("#")) continue
 
-    const streamUrl = nextLine.startsWith("http")
-      ? nextLine
-      : new URL(nextLine, masterUrl).href
+    const streamUrl = _resolveHlsUrl(nextLine, masterUrl)
 
     const bandwidth = bwMatch ? Number(bwMatch[1]) : 0
     // Prefer NAME attribute (e.g. NAME="720p"), fall back to RESOLUTION height, then bandwidth
