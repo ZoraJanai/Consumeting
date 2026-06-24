@@ -153,7 +153,8 @@ async function extractKwikMp4Url(kwikUrl: string): Promise<string> {
   const token  = /value="([^"]+)"/.exec(decrypted)?.[1]
   if (!action || !token) throw new Error(`[kwikMp4] form parse failed: ${decrypted.substring(0, 200)}`)
 
-  // POST → CDN redirect; capture final URL without reading body
+  // POST → CDN redirect; iOS URLSession follows the 302 by default.
+  // response.url is the final URL after all redirects (the signed CDN link).
   const postRes = await fetch(action, {
     method: "POST",
     headers: {
@@ -162,8 +163,6 @@ async function extractKwikMp4Url(kwikUrl: string): Promise<string> {
       "Referer": kwikUrl,
     },
     body: `_token=${encodeURIComponent(token)}`,
-    // redirect:"follow" lets iOS URLSession chase the 302; response.url = CDN URL
-    redirect: "follow",
   })
 
   // response.url is the final URL after all redirects (the signed CDN link)
