@@ -12,6 +12,7 @@ import {
 } from "./animepaheClient"
 import {
   captureKwikCookies,
+  captureKwikPageHtml,
   getStoredKwikCookies,
   isWebViewSessionActive,
   paheHeaders,
@@ -153,36 +154,34 @@ function kwikDecrypt(fullString: string, key: string, v1: number, v2: number): s
 //   4. webViewSubmitForm(_token) → iframe POST → capture CDN URL from 302 redirect
 
 /**
- * Fetch kwik.cx download page HTML using saved CF session.
- * Mirrors Aniyomi fetchKwikHtml: saved session first, captureKwikCookies on 403.
+ * Read the kwik.cx download page HTML by navigating the background WebView.
+ *
+ * Native fetch() uses iOS URLSession whose TLS JA3 fingerprint differs from
+ * WKWebView. Cloudflare binds cf_clearance to the fingerprint used at challenge
+ * time, so URLSession gets 403 even with valid cookies. Reading the page through
+ * the WebView avoids the fingerprint mismatch entirely — same approach Aniyomi
+ * uses by keeping all requests inside the same OkHttp client.
  */
 async function fetchKwikHtml(kwikUrl: string): Promise<string> {
-  const buildHeaders = (cookies: string, ua: string): Record<string, string> => {
-    const h: Record<string, string> = {
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.5",
-      "Origin": "https://kwik.cx",
-      "Referer": "https://kwik.cx/",
-    }
-    if (cookies) h["Cookie"] = cookies
-    if (ua) h["User-Agent"] = ua
-    return h
+  // Ensure we have a live kwik.cx CF session before navigating
+  if (!getStoredKwikCookies().cookies) {
+    console.log("[kwikMp4] no saved kwik cookies — capturing session first")
+    await captureKwikCookies()
   }
 
-  // Attempt 1: saved session (like animepahe.pw saved cookies)
-  const saved = getStoredKwikCookies()
-  console.log("[kwikMp4] fetchKwikHtml attempt1 (saved cookies len:", saved.cookies.length + ")")
-  const r1 = await fetch(kwikUrl, { headers: buildHeaders(saved.cookies, saved.userAgent) })
-  console.log("[kwikMp4] fetchKwikHtml attempt1 response:", r1.status)
-  if (r1.ok) return r1.text()
+  // Attempt 1: navigate WebView to the download page (CF already cleared)
+  console.log("[kwikMp4] fetchKwikHtml reading page via WebView")
+  let html = await captureKwikPageHtml(kwikUrl)
+  if (html.includes("eval(function(")) return html
 
-  // Attempt 2: fresh CF session — navigate WebView to kwik.cx, solve CF, save cookies
-  console.log("[kwikMp4] fetchKwikHtml got", r1.status, "— capturing fresh kwik.cx session")
-  const fresh = await captureKwikCookies()
-  const r2 = await fetch(kwikUrl, { headers: buildHeaders(fresh.cookies, fresh.userAgent) })
-  console.log("[kwikMp4] fetchKwikHtml attempt2 response:", r2.status)
-  if (!r2.ok) throw new Error(`[kwikMp4] kwik page ${r2.status} after session refresh`)
-  return r2.text()
+  // CF expired or page not ready — refresh session and retry once
+  console.log("[kwikMp4] fetchKwikHtml: eval block missing, refreshing CF session")
+  await captureKwikCookies()
+  html = await captureKwikPageHtml(kwikUrl)
+  if (!html.includes("eval(function(")) {
+    throw new Error("[kwikMp4] kwik page missing eval block after CF refresh (html len: " + html.length + ")")
+  }
+  return html
 }
 
 async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Promise<string> {

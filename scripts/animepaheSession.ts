@@ -1077,9 +1077,13 @@ function saveKwikCookies(cookies: string, userAgent: string): void {
  * Should be called once (on demand) and results reused across requests, just
  * like the animepahe.pw session.
  */
+async function waitForKwikCaptureFree(): Promise<void> {
+  while (_kwikCapturing) await new Promise<void>(r => setTimeout(r, 200))
+}
+
 export async function captureKwikCookies(): Promise<{ cookies: string; userAgent: string }> {
   if (!webViewController) throw new Error("[kwikCF] no active WebView session")
-  if (_kwikCapturing) throw new Error("[kwikCF] capture already in progress")
+  await waitForKwikCaptureFree()
 
   _kwikCapturing = true
   console.log("[kwikCF] navigating WebView to kwik.cx for CF session capture")
@@ -1133,6 +1137,51 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
 
   saveKwikCookies(result.cookies, result.userAgent)
   return result
+}
+
+/**
+ * Navigate the background WebView to a kwik.cx download page, read its HTML
+ * via evaluateJavaScript, then navigate back to animepahe.pw.
+ *
+ * Native fetch() (URLSession) is rejected by Cloudflare because its TLS JA3
+ * fingerprint differs from WKWebView's — even with a valid cf_clearance cookie.
+ * Reading the page through the WebView avoids this mismatch entirely.
+ */
+export async function captureKwikPageHtml(kwikUrl: string): Promise<string> {
+  if (!webViewController) throw new Error("[kwikCF] no active WebView session")
+  await waitForKwikCaptureFree()
+  _kwikCapturing = true
+  const baseUrl = getBaseUrl()
+  let html = ""
+
+  try {
+    console.log("[kwikCF] WebView navigating to kwik download page:", kwikUrl.slice(0, 80))
+    try { await webViewController.loadURL(kwikUrl) } catch { /* ignore */ }
+
+    // Poll until eval(function( appears in the DOM (the packed JS block) or timeout
+    const deadline = Date.now() + 10000
+    while (Date.now() < deadline) {
+      await new Promise<void>(r => setTimeout(r, 600))
+      try {
+        const h = String(
+          (await enqueueWebViewScript(webViewController, "return document.documentElement.outerHTML")) || ""
+        )
+        if (h.includes("eval(function(")) {
+          html = h
+          console.log("[kwikCF] kwik page loaded, html length:", html.length)
+          break
+        }
+        console.log("[kwikCF] waiting for kwik eval block, html len so far:", h.length)
+      } catch { /* page still loading */ }
+    }
+  } finally {
+    console.log("[kwikCF] WebView navigating back to animepahe.pw")
+    try { await webViewController.loadURL(baseUrl + "/") } catch { /* ignore */ }
+    await new Promise<void>(r => setTimeout(r, 2000))
+    _kwikCapturing = false
+  }
+
+  return html
 }
 
 /**
