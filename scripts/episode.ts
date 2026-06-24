@@ -89,6 +89,7 @@ export const STORAGE_KEYS = {
   QUALITY_ORDER: "settings.qualityOrder",
   ANIDAP_PROVIDER_ORDER: "settings.anidapProviderOrder",
   ANIDAP_QUALITY_ORDER: "settings.anidapQualityOrder",
+  AUTO_PROVIDER: "settings.autoProvider",
 }
 
 const baseUrl: string = "https://consumet-srgm.vercel.app"
@@ -118,10 +119,12 @@ export async function getAnimepaheSources(id: string): Promise<QualityMap> {
 
 // ---- 1b. Get Anidap Sources ----
 // Episode ID format: "anidap:{slug}:{episodeNumber}"
-export async function getAnidapSources(episodeId: string): Promise<QualityMap> {
+export async function getAnidapSources(
+  episodeId: string,
+  askProvider?: (ids: string[]) => Promise<string>
+): Promise<QualityMap> {
   console.log("[getAnidapSources] episodeId:", episodeId)
   const parts = episodeId.split(":")
-  // parts = ["anidap", slug, epNumber]
   const slug = parts.slice(1, -1).join(":")
   const ep = Number(parts[parts.length - 1])
   if (!slug || isNaN(ep)) throw new Error(`[anidap] invalid episode id: ${episodeId}`)
@@ -133,19 +136,28 @@ export async function getAnidapSources(episodeId: string): Promise<QualityMap> {
   const availableIds = new Set(available.map(p => p.id))
   console.log("[getAnidapSources] available providers:", [...availableIds].join(", "))
 
-  // ── 2. Build ordered provider list from settings (sub only, never dub) ────
+  // ── 2. Build ordered provider list (sub only, never dub) ──────────────────
   const providerOrder = loadSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, AnidapProviderOrder)
-  // Put user-order first (only those actually available), then any remaining providers
   const ordered: string[] = [
     ...providerOrder.filter(id => availableIds.has(id)),
     ...available.filter(p => !providerOrder.includes(p.id)).map(p => p.id),
   ]
-  console.log("[getAnidapSources] trying providers:", ordered.join(" → "))
+  console.log("[getAnidapSources] ordered providers:", ordered.join(" → "))
 
-  // ── 3. Loop providers until one returns a working master m3u8 ─────────────
-  const qualityOrder = loadSetting(STORAGE_KEYS.ANIDAP_QUALITY_ORDER, AnidapQualityOrder)
+  // ── 3. Auto or manual provider selection ──────────────────────────────────
+  const autoProvider = loadSetting(STORAGE_KEYS.AUTO_PROVIDER, true)
 
-  for (const providerId of ordered) {
+  let providersToTry: string[]
+  if (!autoProvider && askProvider && ordered.length > 0) {
+    const chosen = await askProvider(ordered)
+    console.log("[getAnidapSources] user chose provider:", chosen)
+    providersToTry = [chosen]
+  } else {
+    providersToTry = ordered
+  }
+
+  // ── 4. Try providers until one has a working master m3u8 ──────────────────
+  for (const providerId of providersToTry) {
     try {
       const masterUrl = await anidapFetchSourcesByProvider(slug, ep, providerId)
       if (!masterUrl) {
@@ -154,21 +166,13 @@ export async function getAnidapSources(episodeId: string): Promise<QualityMap> {
       }
       console.log("[getAnidapSources] provider", providerId, "master:", masterUrl.substring(0, 80))
 
-      // ── 4. Extract quality variants from master playlist ───────────────────
+      // ── 5. Extract quality variants from master playlist ───────────────────
       const variants = await anidapExtractQualities(masterUrl)
       console.log("[getAnidapSources] qualities:", variants.map(v => v.label).join(", "))
 
-      // ── 5. Build QualityMap keyed by "-1080p", "-720p", etc. ──────────────
       const map: QualityMap = {}
-      for (const v of variants) {
-        map[`-${v.label}`] = v.url
-      }
-      // Always add an "-auto" entry pointing at the raw master as a fallback
+      for (const v of variants) map[`-${v.label}`] = v.url
       if (!map["-auto"]) map["-auto"] = masterUrl
-
-      // Log but preserve original quality order preference for auto-select
-      const picked = qualityAutoSelect(map, qualityOrder)
-      console.log("[getAnidapSources] auto-selected quality:", picked ? "found" : "none")
 
       return map
     } catch (err) {
@@ -273,7 +277,8 @@ export function episodeNumber(number:number, total:number, action:string){
 // ---- 4. Build HLS URL ----
 export async function getEpisode(
   index: number,
-  askQuality?: (options: string[]) => Promise<string>
+  askQuality?: (options: string[]) => Promise<string>,
+  askProvider?: (options: string[]) => Promise<string>
 ): Promise<Anime> {
   console.log("[getEpisode] index:", index)
   showOverlay()
@@ -291,7 +296,7 @@ export async function getEpisode(
 
   const isAnidap = episodeId?.startsWith("anidap:")
   const sources = isAnidap
-    ? await getAnidapSources(episodeId)
+    ? await getAnidapSources(episodeId, askProvider)
     : await getAnimepaheSources(episodeId)        // tag -> url
   const tags = Object.keys(sources)
 

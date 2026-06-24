@@ -349,6 +349,7 @@ export async function anidapExtractQualities(masterUrl: string): Promise<AnidapQ
     if (!line.startsWith("#EXT-X-STREAM-INF")) continue
 
     const bwMatch = /BANDWIDTH=(\d+)/.exec(line)
+    const nameMatch = /NAME="([^"]+)"/.exec(line)
     const resMatch = /RESOLUTION=\d+x(\d+)/.exec(line)
     const nextLine = lines[i + 1]?.trim()
     if (!nextLine || nextLine.startsWith("#")) continue
@@ -358,7 +359,12 @@ export async function anidapExtractQualities(masterUrl: string): Promise<AnidapQ
       : new URL(nextLine, masterUrl).href
 
     const bandwidth = bwMatch ? Number(bwMatch[1]) : 0
-    const label = resMatch ? resMatch[1] + "p" : `${Math.round(bandwidth / 1000)}k`
+    // Prefer NAME attribute (e.g. NAME="720p"), fall back to RESOLUTION height, then bandwidth
+    const label = nameMatch
+      ? nameMatch[1]
+      : resMatch
+        ? resMatch[1] + "p"
+        : `${Math.round(bandwidth / 1000)}k`
     variants.push({ bandwidth, label, url: streamUrl })
   }
 

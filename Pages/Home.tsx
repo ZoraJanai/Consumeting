@@ -7,6 +7,7 @@ import { searchAnilist, searchAnimepahe } from "../scripts/search"
 import { NumberInputSheet } from "./numberPopout"
 import { STORAGE_KEYS, loadSetting, saveSetting } from "./Settings"
 import { QualitiesOrder, downloadEpisode, episodeNumber, getEpisode } from "../scripts/episode"
+import { AnidapProviderOrder } from "./Settings"
 import { getCache, addCache, addQueue } from "../scripts/cache"
 import { hideOverlay, showOverlay } from "./Loading"
 import { QualityPickerSheet } from "./QualityPickerSheet"
@@ -122,11 +123,13 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
   const [showQualitySheet, setShowQualitySheet] = useState(false)
   const [qualityTitle, setQualityTitle] = useState("Which quality?")
   const [qualityOptions, setQualityOptions] = useState<string[]>([])
+  const [qualitySheetOrder, setQualitySheetOrder] = useState<string[]>(QualitiesOrder)
   
-  function askQualityOnce(title: string, options: string[]): Promise<string> {
+  function askQualityOnce(title: string, options: string[], order?: string[]): Promise<string> {
     return new Promise<string>((resolve) => {
       setQualityTitle(title)
       setQualityOptions(options)
+      setQualitySheetOrder(order ?? loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder))
       ;(setQualityOptions as any).resolve = resolve
       setShowQualitySheet(true)
     })
@@ -190,7 +193,11 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
     return
   } else {
     try {
-      const anime = await getEpisode(index, async (options) => await askQualityOnce("Which quality?", options))
+      const anime = await getEpisode(
+        index,
+        async (options) => await askQualityOnce("Which quality?", options),
+        async (options) => await askQualityOnce("Which provider?", options, loadSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, AnidapProviderOrder))
+      )
       const next = await addCache(anime)
       setAnimes([next[0]])
       saveSetting(CACHE_KEY, [next[0]])
@@ -545,7 +552,7 @@ function cleanupAfterQualityCancel() {
       <QualityPickerSheet
         title={qualityTitle}
         options={qualityOptions}
-        order={loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)} // live order from settings
+        order={qualitySheetOrder}
         onPicked={(q) => {
           const resolver = (setQualityOptions as any).resolve as ((val: string) => void) | undefined
           if (resolver) {

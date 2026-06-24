@@ -25,6 +25,7 @@ export const STORAGE_KEYS = {
   QUEUE_PATH: "queue.path",
   ANIDAP_PROVIDER_ORDER: "settings.anidapProviderOrder",
   ANIDAP_QUALITY_ORDER: "settings.anidapQualityOrder",
+  AUTO_PROVIDER: "settings.autoProvider",
 }
 
 // Simple storage helpers
@@ -218,6 +219,9 @@ export function SettingsPage() {
   const [autoQuality, setAutoQuality] = useState(
     loadSetting(STORAGE_KEYS.AUTO_QUALITY, true)
   )
+  const [autoProvider, setAutoProvider] = useState(
+    loadSetting(STORAGE_KEYS.AUTO_PROVIDER, true)
+  )
 
   function handleVideoPlayerChange(player: any) {
     setVideoPlayer(player)
@@ -232,6 +236,11 @@ export function SettingsPage() {
   function handleAutoQualityChange(enabled: boolean) {
     setAutoQuality(enabled)
     saveSetting(STORAGE_KEYS.AUTO_QUALITY, enabled)
+  }
+
+  function handleAutoProviderChange(enabled: boolean) {
+    setAutoProvider(enabled)
+    saveSetting(STORAGE_KEYS.AUTO_PROVIDER, enabled)
   }
 
   return (
@@ -279,6 +288,11 @@ export function SettingsPage() {
 
         {Provider === "Anidap" && (
           <Section header={<Text>Anidap</Text>}>
+            <Toggle
+              title={"Automatic Provider Selector"}
+              value={autoProvider}
+              onChanged={handleAutoProviderChange}
+            />
             <SheetAnidapProviders />
           </Section>
         )}
