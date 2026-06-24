@@ -424,7 +424,7 @@ export async function downloadEpisode(
     }
 
     const number = Number(entry.episode) + i
-    const link = `ffmpeg -headers "Referer: https://kwik.cx/\\r\\nOrigin: https://kwik.cx\\r\\n" -i "${url}" -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`
+    const link = `ffmpeg -allowed_segment_extensions ALL -allowed_extensions ALL -extension_picky 0 -headers "Origin: https://kwik.cx" -referer "https://kwik.cx/" -user_agent "Mozilla/5.0" -i "${url}" -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`
     links.push(link)
 
     onProgress?.(i + 1, total)
