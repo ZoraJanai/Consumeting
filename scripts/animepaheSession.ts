@@ -49,6 +49,12 @@ let _paheWinCaptureCallback: ((url: string) => void) | null = null
 // target page can load and solve its own CF challenge (e.g. kwik.cx).
 let _paheWinCaptureShouldBlock = true
 
+// ── kwik.cx CF session flag ────────────────────────────────────────────────────
+// While true, the pahePageReady "wrong host → reload home" guard is suppressed
+// so the WebView can stay on kwik.cx long enough to solve the CF challenge.
+// Also acts as a mutex to prevent concurrent kwik captures.
+let _kwikCapturing = false
+
 function interceptPaheWinRedirect(url: string, request?: any): boolean {
   if (!_paheWinCaptureCallback) return false
   if (!url.startsWith("https://")) return false
@@ -612,6 +618,8 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
 
     await controller.addScriptMessageHandler("pahePageReady", async function (pageUrl: string) {
       //console.log("[animepaheSession] WebView navigated:", pageUrl)
+      // Suppress during kwik.cx CF capture — we intentionally left animepahe.pw
+      if (_kwikCapturing) return "ok"
       if (isBlankOrWrongHost(pageUrl, baseUrl)) {
         console.log("[animepaheSession] Blank or wrong host — reloading home")
         await loadWebViewHome(controller, baseUrl)
@@ -955,6 +963,13 @@ async function runBootstrap(): Promise<boolean> {
 
   const verified = await captureSessionFromWebView(baseUrl)
   sessionReady = verified
+
+  // Pre-warm kwik.cx CF session in the background so the first episode request
+  // doesn't stall. Mirrors Aniyomi: CF bypass is resolved before video play.
+  if (verified && webViewController && !getStoredKwikCookies().cookies) {
+    captureKwikCookies().catch(e => console.log("[kwikCF] boot pre-warm failed:", String(e)))
+  }
+
   return verified
 }
 
@@ -1064,7 +1079,9 @@ function saveKwikCookies(cookies: string, userAgent: string): void {
  */
 export async function captureKwikCookies(): Promise<{ cookies: string; userAgent: string }> {
   if (!webViewController) throw new Error("[kwikCF] no active WebView session")
+  if (_kwikCapturing) throw new Error("[kwikCF] capture already in progress")
 
+  _kwikCapturing = true
   console.log("[kwikCF] navigating WebView to kwik.cx for CF session capture")
   try { await webViewController.loadURL("https://kwik.cx/") } catch { /* ignore */ }
 
@@ -1107,6 +1124,7 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
   try { await webViewController.loadURL(baseUrl + "/") } catch { /* ignore */ }
   // Give the page time to settle before the next iframe injection
   await new Promise<void>(r => setTimeout(r, 3000))
+  _kwikCapturing = false
 
   if (!result) {
     console.log("[kwikCF] timed out waiting for kwik.cx cf_clearance")
