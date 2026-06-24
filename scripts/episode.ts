@@ -135,52 +135,63 @@ function kwikDecrypt(fullString: string, key: string, v1: number, v2: number): s
   return result
 }
 
-// ─── MP4 extractor (primary path) ──────────────────────────────────────────
-// Aniyomi approach: the embed URL (/e/) only has the m3u8 packed inline.
-// Appending /i triggers a redirect to the download page, which holds the
-// encrypted form params (action + _token) needed to get the signed CDN URL.
-async function extractKwikMp4Url(kwikUrl: string): Promise<string> {
-  // Step 1: hit /i to land on the download page (follows redirects automatically)
-  const downloadRes = await fetch(kwikUrl + "/i", {
+// ─── MP4 extractor (Aniyomi approach: pahe.win + "/i" → kwik download page) ─
+// AnimePahe.kt uses div#pickDownload <a> hrefs (pahe.win URLs), not data-src.
+// paheWinUrl + "/i" redirects to the kwik download page (/f/ or /d/) which
+// contains the encrypted POST form — completely different from the embed page.
+//
+// Two-step fetch mirrors Aniyomi's noRedirectClient → fetchKwikHtml pattern:
+//  1. Follow the pahe.win/i redirect to get the actual kwik download URL
+//  2. Re-fetch that URL with kwik.cx headers so the form HTML is clean
+async function extractKwikMp4Url(paheWinUrl: string, animepaheBase: string): Promise<string> {
+  // Step 1: resolve the pahe.win redirect to reach the kwik download page
+  const redirectRes = await fetch(paheWinUrl + "/i", {
+    headers: { "Referer": animepaheBase + "/" },
+  })
+  await redirectRes.text() // drain body; we only need the final URL
+  const kwikDownloadUrl = redirectRes.url
+  if (!kwikDownloadUrl || kwikDownloadUrl === paheWinUrl + "/i") {
+    throw new Error("[kwikMp4] pahe.win redirect did not resolve")
+  }
+
+  // Step 2: fetch the kwik download page with kwik.cx headers (matches Aniyomi fetchKwikHtml)
+  const kwikRes = await fetch(kwikDownloadUrl, {
     headers: {
       "Origin": "https://kwik.cx",
       "Referer": "https://kwik.cx/",
     },
   })
-  const html = await downloadRes.text()
-  const downloadPageUrl = downloadRes.url || kwikUrl
+  const html = await kwikRes.text()
 
-  // Step 2: decrypt the obfuscated form params
+  // Step 3: decrypt the obfuscated form params
   const pm = /\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)/.exec(html)
   if (!pm) throw new Error("[kwikMp4] decrypt params not found")
 
   const decrypted = kwikDecrypt(pm[1], pm[2], parseInt(pm[3], 10), parseInt(pm[4], 10))
-
   const action = /action="([^"]+)"/.exec(decrypted)?.[1]
   const token  = /value="([^"]+)"/.exec(decrypted)?.[1]
   if (!action || !token) throw new Error(`[kwikMp4] form parse failed: ${decrypted.substring(0, 200)}`)
 
-  // Step 3: POST → CDN redirect; response.url is the final signed CDN URL.
+  // Step 4: POST → CDN redirect; response.url is the final signed CDN URL
   const postRes = await fetch(action, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       "Origin": "https://kwik.cx",
-      "Referer": downloadPageUrl,
+      "Referer": kwikDownloadUrl,
     },
     body: `_token=${encodeURIComponent(token)}`,
   })
 
   const finalUrl = postRes.url
   if (!finalUrl || finalUrl === action) throw new Error(`[kwikMp4] no redirect (status ${postRes.status})`)
-
   return finalUrl
 }
 
-// ─── HLS extractor (fallback) ───────────────────────────────────────────────
-async function extractKwikHlsUrl(kwikUrl: string): Promise<string> {
-  const response = await fetch(kwikUrl, {
-    headers: paheHeaders({ referer: getDirectBaseUrl() + "/", mode: "navigate" }),
+// ─── HLS extractor (Aniyomi: getHlsStreamUrl — eval packed JS, find m3u8) ──
+async function extractKwikHlsUrl(kwikEmbedUrl: string, animepaheBase: string): Promise<string> {
+  const response = await fetch(kwikEmbedUrl, {
+    headers: paheHeaders({ referer: animepaheBase + "/", mode: "navigate" }),
   })
   if (!response.ok) throw new Error(`[kwikHls] fetch failed: ${response.status}`)
 
@@ -191,18 +202,23 @@ async function extractKwikHlsUrl(kwikUrl: string): Promise<string> {
   const unpacked = eval(packedMatch[2].replace("eval", ""))
   const m3u8Match = unpacked.match(/https.*?m3u8/)
   if (!m3u8Match) throw new Error("[kwikHls] m3u8 URL not found")
-
   return m3u8Match[0]
 }
 
-// ─── Unified extractor: MP4 first (/i download page), HLS fallback ─────────
-async function extractKwikUrl(kwikUrl: string): Promise<string> {
-  try {
-    return await extractKwikMp4Url(kwikUrl)
-  } catch (mp4Err) {
-    console.error("[kwik] MP4 failed, falling back to HLS:", String(mp4Err))
-    return extractKwikHlsUrl(kwikUrl)
+// ─── Unified extractor: MP4 first (paheWinUrl), HLS fallback (kwikEmbedUrl) ─
+async function extractKwikUrl(
+  kwikEmbedUrl: string,
+  paheWinUrl: string | null,
+  animepaheBase: string,
+): Promise<string> {
+  if (paheWinUrl) {
+    try {
+      return await extractKwikMp4Url(paheWinUrl, animepaheBase)
+    } catch (mp4Err) {
+      console.error("[kwik] MP4 failed, falling back to HLS:", String(mp4Err))
+    }
   }
+  return extractKwikHlsUrl(kwikEmbedUrl, animepaheBase)
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -218,42 +234,72 @@ function decodeHtmlEntities(text: string): string {
   return text.replace(/&[a-z0-9#]+;/gi, entity => entities[entity] || entity)
 }
 
-function parseResolutionMenu(html: string) {
-  const buttons: { url: string; quality: string }[] = []
-  const buttonRegex = /<button[^>]*class="dropdown-item[^"]*"[^>]*>(.*?)<\/button>/gs
+// Extract pahe.win download hrefs from div#pickDownload (Aniyomi: downloadLinks)
+function extractDownloadLinks(html: string): string[] {
+  const start = html.indexOf('id="pickDownload"')
+  if (start === -1) return []
+  // Grab a generous window after the section start; direct <a> children come first
+  const section = html.substring(start, start + 4000)
+  const end = section.indexOf("</div>")
+  const relevant = end !== -1 ? section.substring(0, end) : section
+  const links: string[] = []
+  const hrefRe = /<a[^>]+href="([^"]+)"/g
+  let m
+  while ((m = hrefRe.exec(relevant)) !== null) {
+    links.push(m[1])
+  }
+  return links
+}
 
+// Parse both div#resolutionMenu buttons and div#pickDownload links, paired by
+// index exactly as Aniyomi does (withIndex + downloadLinks.getOrNull(index)).
+function parseResolutionMenu(html: string): { kwikUrl: string; paheWinUrl: string | null; quality: string }[] {
+  const downloadLinks = extractDownloadLinks(html)
+
+  const result: { kwikUrl: string; paheWinUrl: string | null; quality: string }[] = []
+  const buttonRegex = /<button[^>]*class="dropdown-item[^"]*"[^>]*>([\s\S]*?)<\/button>/g
   let match
+  let idx = 0
+
   while ((match = buttonRegex.exec(html)) !== null) {
     const fullButton = match[0]
     const innerText = match[1]
     const srcMatch = /data-src="([^"]*)"/.exec(fullButton)
-    if (!srcMatch) continue
+    if (!srcMatch) { idx++; continue }
 
     const audioMatch = /data-audio="([^"]*)"/.exec(fullButton)
-    if (audioMatch?.[1]?.toLowerCase() === "eng") continue
+    const isEng = audioMatch?.[1]?.toLowerCase() === "eng"
 
     const textMatch = /^\s*(.*?)\s*(?:<span|$)/.exec(innerText)
     const quality = decodeHtmlEntities(textMatch ? textMatch[1].trim() : innerText.trim())
 
-    buttons.push({ url: srcMatch[1], quality })
+    if (!isEng) {
+      result.push({
+        kwikUrl: srcMatch[1],
+        paheWinUrl: downloadLinks[idx] ?? null,
+        quality,
+      })
+    }
+    idx++
   }
 
-  return buttons
+  return result
 }
 
 async function scrapePlayPageSources(episodeId: string): Promise<QualityMap> {
   const html = await directFetchPlayPage(episodeId)
-  const buttons = parseResolutionMenu(html)
+  const entries = parseResolutionMenu(html)
+  const base = getDirectBaseUrl()
   const dict: QualityMap = {}
 
-  for (const button of buttons) {
+  for (const entry of entries) {
     try {
-      const url = await extractKwikUrl(button.url)
-      const parts = button.quality.split(" · ")
+      const url = await extractKwikUrl(entry.kwikUrl, entry.paheWinUrl, base)
+      const parts = entry.quality.split(" · ")
       const tag = "-" + (parts[1] ?? parts[0]).trim()
-      if (!tag.endsWith("eng")) dict[tag] = url
+      dict[tag] = url
     } catch (err) {
-      console.error(`[getAnimepaheSources] Failed quality ${button.quality}:`, err)
+      console.error(`[getAnimepaheSources] Failed quality ${entry.quality}:`, err)
     }
   }
 
