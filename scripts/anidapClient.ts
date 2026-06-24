@@ -171,6 +171,17 @@ export interface AnidapEpisode {
   hasHsub?: boolean
 }
 
+export interface AnidapProvider {
+  id: string
+  isHardSub: boolean
+  tip: string
+}
+
+export interface AnidapQualityVariant {
+  label: string  // "1080p", "720p", "480p", "360p", "auto"
+  url: string    // absolute URL to quality-specific m3u8
+}
+
 // ─────────────────────────────────────────────
 // API: resolve AniList ID → slug + metadata
 // ─────────────────────────────────────────────
@@ -261,14 +272,9 @@ export async function anidapFetchEpisodes(slug: string): Promise<AnidapEpisode[]
 // API: servers for episode
 // ─────────────────────────────────────────────
 
-export interface AnidapServer {
-  name: string
-  type: "sub" | "dub" | "hsub"
-}
-
-export async function anidapFetchServers(slug: string, ep: number): Promise<AnidapServer[]> {
-  const referer = `${BASE}/watch?id=${slug}&ep=${ep}&type=sub`
-
+// Returns the hard-sub sub providers available for this episode, ordered as received
+export async function anidapFetchProviders(slug: string, ep: number): Promise<AnidapProvider[]> {
+  const referer = `${BASE}/watch?id=${slug}&epNum=${ep}&type=sub`
   const url = `${API}/servers?id=${slug}&epNum=${ep}`
   const res = await anidapFetch(url, referer)
   if (!res.ok) {
@@ -280,65 +286,86 @@ export async function anidapFetchServers(slug: string, ep: number): Promise<Anid
   console.log("[anidap] servers raw:", JSON.stringify(raw).substring(0, 300))
   const data = raw.data ?? raw
 
-  const out: AnidapServer[] = []
-  for (const key of Object.keys(data)) {
-    if (key.endsWith("Providers")) {
-      const type = key.replace("Providers", "") as "sub" | "dub" | "hsub"
-      for (const name of (data[key] as string[])) {
-        out.push({ name, type })
-      }
-    }
-  }
-
-  if (!out.length) {
-    console.log("[anidap] servers OK but no providers found — keys:", JSON.stringify(Object.keys(data)))
-  }
-  return out
+  // subProviders is an array of {id, default, tip} objects
+  const subProviders: any[] = data.subProviders ?? []
+  return subProviders.map((p: any) => ({
+    id: String(p.id ?? p),
+    isHardSub: String(p.tip ?? "").toLowerCase().includes("hard sub"),
+    tip: String(p.tip ?? ""),
+  }))
 }
 
 // ─────────────────────────────────────────────
-// API: fetch + decrypt stream sources
-// Returns quality map e.g. { "-sub": "https://...", "-dub": "https://..." }
+// API: fetch sources for a specific sub provider
+// Returns the master m3u8 URL, or null if unavailable
 // ─────────────────────────────────────────────
 
-export async function anidapFetchSources(
+export async function anidapFetchSourcesByProvider(
   slug: string,
   ep: number,
-  servers: AnidapServer[]
-): Promise<Record<string, string>> {
-  const map: Record<string, string> = {}
-
-  // Attempt each type once; stop after we have sub + dub (or exhausted servers)
-  const attempted = new Set<string>()
-  for (const srv of servers) {
-    const key = `-${srv.type}`
-    if (map[key]) continue
-    if (attempted.has(srv.name + srv.type)) continue
-    attempted.add(srv.name + srv.type)
-
-    try {
-      const referer = `${BASE}/watch?id=${slug}&epNum=${ep}&type=${srv.type}&provider=${srv.name}`
-      const url = `${API}/sources?id=${slug}&epNum=${ep}&host=${srv.name}&type=${srv.type}`
-      const res = await anidapFetch(url, referer)
-      if (!res.ok) {
-        const body = await res.text().catch(() => "")
-        console.log("[anidap] sources non-ok:", res.status, srv.name, srv.type, body.substring(0, 150))
-        continue
-      }
-
-      const body = await res.json()
-      const encrypted: string = body.data
-      if (!encrypted) continue
-
-      const decrypted = await _decryptData(encrypted)
-      const parsed = JSON.parse(decrypted)
-      const rawUrl: string = parsed.sources?.[0]?.url ?? parsed.sources?.[0]?.file ?? ""
-      if (!rawUrl) continue
-
-      map[key] = wrapCorsProxy(rawUrl)
-    } catch (err) {
-      console.error(`[anidap] source error (${srv.name}/${srv.type}):`, String(err))
-    }
+  providerId: string
+): Promise<string | null> {
+  const referer = `${BASE}/watch?id=${slug}&epNum=${ep}&type=sub&provider=${providerId}`
+  const url = `${API}/sources?id=${slug}&epNum=${ep}&type=sub&providerId=${providerId}`
+  const res = await anidapFetch(url, referer)
+  if (!res.ok) {
+    const body = await res.text().catch(() => "")
+    console.log(`[anidap] sources ${providerId} non-ok: ${res.status}`, body.substring(0, 120))
+    return null
   }
-  return map
+
+  const body = await res.json()
+  const sources: any[] = body.sources ?? []
+  if (!sources.length) return null
+
+  // Prefer mpegurl / m3u8 source
+  const src = sources.find((s: any) => s.type === "video/mpegurl" || String(s.url).includes(".m3u8"))
+    ?? sources[0]
+  return src?.url ?? null
+}
+
+// ─────────────────────────────────────────────
+// Parse a master HLS playlist to extract quality variants
+// Returns variants sorted highest bandwidth first
+// Falls back to [{label:"auto", url: masterUrl}] if it's already a media playlist
+// ─────────────────────────────────────────────
+
+export async function anidapExtractQualities(masterUrl: string): Promise<AnidapQualityVariant[]> {
+  let text = ""
+  try {
+    const res = await anidapFetch(masterUrl)
+    if (!res.ok) throw new Error(`${res.status}`)
+    text = await res.text()
+  } catch (err) {
+    console.log("[anidap] m3u8 fetch error:", String(err))
+    return [{ label: "auto", url: masterUrl }]
+  }
+
+  const variants: { bandwidth: number; label: string; url: string }[] = []
+  const lines = text.split("\n")
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (!line.startsWith("#EXT-X-STREAM-INF")) continue
+
+    const bwMatch = /BANDWIDTH=(\d+)/.exec(line)
+    const resMatch = /RESOLUTION=\d+x(\d+)/.exec(line)
+    const nextLine = lines[i + 1]?.trim()
+    if (!nextLine || nextLine.startsWith("#")) continue
+
+    const streamUrl = nextLine.startsWith("http")
+      ? nextLine
+      : new URL(nextLine, masterUrl).href
+
+    const bandwidth = bwMatch ? Number(bwMatch[1]) : 0
+    const label = resMatch ? resMatch[1] + "p" : `${Math.round(bandwidth / 1000)}k`
+    variants.push({ bandwidth, label, url: streamUrl })
+  }
+
+  if (!variants.length) {
+    return [{ label: "auto", url: masterUrl }]
+  }
+
+  variants.sort((a, b) => b.bandwidth - a.bandwidth)
+  return variants.map(v => ({ label: v.label, url: v.url }))
 }

@@ -7,7 +7,8 @@ import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
-import { anidapFetchServers, anidapFetchSources } from "./anidapClient"
+import { anidapFetchProviders, anidapFetchSourcesByProvider, anidapExtractQualities } from "./anidapClient"
+import { AnidapProviderOrder, AnidapQualityOrder } from "../Pages/Settings"
 
 
 
@@ -85,7 +86,9 @@ export const QualitiesOrder = [
 export const STORAGE_KEYS = {
   VIDEO_PLAYER: "settings.videoPlayer",
   AUTO_QUALITY: "settings.autoQuality",
-  QUALITY_ORDER: "settings.qualityOrder"
+  QUALITY_ORDER: "settings.qualityOrder",
+  ANIDAP_PROVIDER_ORDER: "settings.anidapProviderOrder",
+  ANIDAP_QUALITY_ORDER: "settings.anidapQualityOrder",
 }
 
 const baseUrl: string = "https://consumet-srgm.vercel.app"
@@ -124,15 +127,56 @@ export async function getAnidapSources(episodeId: string): Promise<QualityMap> {
   if (!slug || isNaN(ep)) throw new Error(`[anidap] invalid episode id: ${episodeId}`)
 
   console.log("[getAnidapSources] slug:", slug, "ep:", ep)
-  const servers = await anidapFetchServers(slug, ep)
-  console.log("[getAnidapSources] servers:", JSON.stringify(servers))
-  if (!servers.length) throw new Error(`[anidap] no servers found for ep ${ep}`)
 
-  const sources = await anidapFetchSources(slug, ep, servers)
-  console.log("[getAnidapSources] sources keys:", Object.keys(sources))
-  if (!Object.keys(sources).length) throw new Error(`[anidap] no sources decrypted for ep ${ep}`)
+  // ── 1. Fetch available sub providers ──────────────────────────────────────
+  const available = await anidapFetchProviders(slug, ep)
+  const availableIds = new Set(available.map(p => p.id))
+  console.log("[getAnidapSources] available providers:", [...availableIds].join(", "))
 
-  return sources
+  // ── 2. Build ordered provider list from settings (sub only, never dub) ────
+  const providerOrder = loadSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, AnidapProviderOrder)
+  // Put user-order first (only those actually available), then any remaining providers
+  const ordered: string[] = [
+    ...providerOrder.filter(id => availableIds.has(id)),
+    ...available.filter(p => !providerOrder.includes(p.id)).map(p => p.id),
+  ]
+  console.log("[getAnidapSources] trying providers:", ordered.join(" → "))
+
+  // ── 3. Loop providers until one returns a working master m3u8 ─────────────
+  const qualityOrder = loadSetting(STORAGE_KEYS.ANIDAP_QUALITY_ORDER, AnidapQualityOrder)
+
+  for (const providerId of ordered) {
+    try {
+      const masterUrl = await anidapFetchSourcesByProvider(slug, ep, providerId)
+      if (!masterUrl) {
+        console.log("[getAnidapSources] no URL from provider:", providerId)
+        continue
+      }
+      console.log("[getAnidapSources] provider", providerId, "master:", masterUrl.substring(0, 80))
+
+      // ── 4. Extract quality variants from master playlist ───────────────────
+      const variants = await anidapExtractQualities(masterUrl)
+      console.log("[getAnidapSources] qualities:", variants.map(v => v.label).join(", "))
+
+      // ── 5. Build QualityMap keyed by "-1080p", "-720p", etc. ──────────────
+      const map: QualityMap = {}
+      for (const v of variants) {
+        map[`-${v.label}`] = v.url
+      }
+      // Always add an "-auto" entry pointing at the raw master as a fallback
+      if (!map["-auto"]) map["-auto"] = masterUrl
+
+      // Log but preserve original quality order preference for auto-select
+      const picked = qualityAutoSelect(map, qualityOrder)
+      console.log("[getAnidapSources] auto-selected quality:", picked ? "found" : "none")
+
+      return map
+    } catch (err) {
+      console.log("[getAnidapSources] provider", providerId, "error:", String(err))
+    }
+  }
+
+  throw new Error(`[anidap] no working sub provider found for ep ${ep}`)
 }
 
 // ---- 2. Pick First Match From Quality Order ----
@@ -254,14 +298,11 @@ export async function getEpisode(
   let selectedUrl: string | undefined
 
   if (isAnidap) {
-    // Anidap: prefer -sub, then -dub, then -hsub; fall back to first available
-    selectedUrl =
-      sources["-sub"] ??
-      sources["-dub"] ??
-      sources["-hsub"] ??
-      sources[tags[0]]
-    // Still let user pick if they turned off auto-quality
-    if (!autoQuality && askQuality) {
+    const anidapQualityOrder = loadSetting(STORAGE_KEYS.ANIDAP_QUALITY_ORDER, AnidapQualityOrder)
+    if (autoQuality) {
+      selectedUrl = qualityAutoSelect(sources, anidapQualityOrder) ?? sources[tags[0]]
+    } else {
+      if (!askQuality) throw new Error("askQuality callback not provided")
       const pickedTag = await askQuality(tags)
       selectedUrl = sources[pickedTag]
     }
@@ -297,7 +338,7 @@ export async function getEpisode(
 
   let streamUrl: string
   if (isAnidap) {
-    // Anidap sources are already wrapped with cors.otakuu.se proxy — open directly
+    // Anidap: quality-specific CDN m3u8, opened directly by native player
     streamUrl = String(selectedUrl)
   } else {
     // Animepahe: extract HLS from kwik

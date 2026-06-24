@@ -12,6 +12,9 @@ const QualitiesOrder = [
   "-default", "-auto", "-480p", "-360p"
 ]
 
+export const AnidapProviderOrder = ["uwu", "mimi", "mochi", "beep"]
+export const AnidapQualityOrder = ["-1080p", "-720p", "-480p", "-360p", "-auto"]
+
 // Storage keys
 export const STORAGE_KEYS = {
   VIDEO_PLAYER: "settings.videoPlayer",
@@ -19,7 +22,9 @@ export const STORAGE_KEYS = {
   QUALITY_ORDER: "settings.qualityOrder",
   PROVIDER: "settings.provider",
   CACHE_PATH: "cache.path",
-  QUEUE_PATH: "queue.path"
+  QUEUE_PATH: "queue.path",
+  ANIDAP_PROVIDER_ORDER: "settings.anidapProviderOrder",
+  ANIDAP_QUALITY_ORDER: "settings.anidapQualityOrder",
 }
 
 // Simple storage helpers
@@ -128,6 +133,79 @@ function SheetOrder() {
   )
 }
 
+// ---------- Anidap Provider Order Sheet ----------
+function AnidapProviders({ isPresented }: { isPresented: boolean }) {
+  const [order, setOrder] = useState<string[]>(
+    loadSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, AnidapProviderOrder)
+  )
+
+  useEffect(() => {
+    if (isPresented) setOrder(loadSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, AnidapProviderOrder))
+  }, [isPresented])
+
+  function onDelete(indices: number[]) {
+    const next = order.filter((_, i) => !indices.includes(i))
+    setOrder(next)
+    saveSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, next)
+  }
+
+  function onMove(indices: number[], newOffset: number) {
+    const moving = indices.map(i => order[i])
+    const remaining = order.filter((_, i) => !indices.includes(i))
+    remaining.splice(newOffset, 0, ...moving)
+    setOrder(remaining)
+    saveSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, remaining)
+  }
+
+  async function addProvider() {
+    const input = await Dialog.prompt({ title: "Add Provider", message: "Enter provider id (e.g. uwu)" })
+    const value = (input ?? "").trim().toLowerCase()
+    if (value) {
+      const next = [value, ...order]
+      setOrder(next)
+      saveSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, next)
+    }
+  }
+
+  return (
+    <NavigationStack>
+      <List
+        key={`list-${order.length}-${Date.now()}`}
+        navigationTitle={"Anidap Provider Order"}
+        navigationBarTitleDisplayMode={"inline"}
+        toolbar={{
+          cancellationAction: [<EditButton />],
+          confirmationAction: [
+            <Button title="" systemImage="plus" action={addProvider} />,
+          ],
+        }}
+      >
+        <ForEach
+          count={order.length}
+          itemBuilder={index => <Text key={order[index]}>{order[index]}</Text>}
+          onDelete={onDelete}
+          onMove={onMove}
+        />
+      </List>
+    </NavigationStack>
+  )
+}
+
+function SheetAnidapProviders() {
+  const [isPresented, setIsPresented] = useState(false)
+  return (
+    <Button
+      title={"Edit Provider Order"}
+      action={() => setIsPresented(true)}
+      sheet={{
+        isPresented,
+        onChanged: setIsPresented,
+        content: <AnidapProviders isPresented={isPresented} />,
+      }}
+    />
+  )
+}
+
 // ---------- Main Settings Page ----------
 export function SettingsPage() {
   const dismiss = Navigation.useDismiss()
@@ -198,6 +276,12 @@ export function SettingsPage() {
             </Picker>
           </HStack>
         </Section>
+
+        {Provider === "Anidap" && (
+          <Section header={<Text>Anidap</Text>}>
+            <SheetAnidapProviders />
+          </Section>
+        )}
       </List>
     </NavigationStack>
   )
