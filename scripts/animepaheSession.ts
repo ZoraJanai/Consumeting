@@ -46,22 +46,42 @@ let verificationController: any = null
 // non-pahe.win / non-CF URL is seen (kwik download URL or CDN stream URL).
 let _paheWinCaptureCallback: ((url: string) => void) | null = null
 
-function interceptPaheWinRedirect(url: string): boolean {
+function interceptPaheWinRedirect(url: string, request?: any): boolean {
   if (!_paheWinCaptureCallback) return false
   if (!url.startsWith("https://")) return false
+
+  // Resource loads (images, CSS, scripts) have an empty navigationType.
+  // Iframe navigations and HTTP redirects have "other" or "formSubmitted".
+  // Skip anything that is not a navigation — this prevents background thumbnail
+  // image requests (e.g. image.thum.io) from being captured instead of the
+  // real pahe.win → kwik redirect.
+  const navType = (request?.navigationType as string) || ""
+  const isNav = navType === "other" || navType === "formSubmitted" || navType === "linkActivated"
+  if (!isNav) return false
+
   const isOwn =
     url.includes("pahe.win") ||
     url.includes("cloudflare") ||
     url.includes("ddos-guard")
   if (isOwn) {
-    console.log("[paheWin] shouldAllow → pass-through:", url.slice(0, 80))
+    console.log("[paheWin] shouldAllow → pass-through [" + navType + "]:", url.slice(0, 80))
     return false
   }
-  // Captured — fire and clear callback, signal caller to block navigation
-  console.log("[paheWin] shouldAllow → CAPTURED redirect:", url.slice(0, 120))
+
+  // Safety net: some pages wrap the real kwik URL inside a thumbnail proxy,
+  // e.g. "https://image.thum.io/.../https://kwik.cx/f/xxx".
+  // Extract the embedded kwik URL when present.
+  let resolvedUrl = url
+  const kwikEmbed = /https:\/\/kwik\.cx\/[ef]\/\w+/.exec(url)
+  if (kwikEmbed && kwikEmbed[0] !== url) {
+    resolvedUrl = kwikEmbed[0]
+    console.log("[paheWin] unwrapped embedded kwik URL →", resolvedUrl)
+  }
+
+  console.log("[paheWin] shouldAllow → CAPTURED [" + navType + "]:", resolvedUrl.slice(0, 120))
   const cb = _paheWinCaptureCallback
   _paheWinCaptureCallback = null
-  cb(url)
+  cb(resolvedUrl)
   return true
 }
 const WEBVIEW_FETCH_TIMEOUT_MS = 90000
@@ -603,7 +623,7 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
     if (!request || !request.url) return true
 
     // pahe.win iframe redirect capture — fires before standard host handling
-    if (interceptPaheWinRedirect(request.url)) return false
+    if (interceptPaheWinRedirect(request.url, request)) return false
 
     if (request.url.indexOf(host) >= 0) {
       const headers = request.headers || {}
