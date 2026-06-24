@@ -238,7 +238,7 @@ async function anidapFetchInfo(slug: string): Promise<{ title: string; image?: s
 
 export async function anidapFetchEpisodes(slug: string): Promise<AnidapEpisode[]> {
   const url = `${API}/episodes?id=${slug}`
-  const res = await anidapFetch(url, `${BASE}/watch?id=${slug}&ep=1`)
+  const res = await anidapFetch(url, `${BASE}/watch?id=${slug}&epNum=1`)
   if (!res.ok) {
     const body = await res.text().catch(() => "(unreadable)")
     throw new Error(`[anidap] episodes failed: ${res.status} — ${body.substring(0, 300)}`)
@@ -268,11 +268,16 @@ export interface AnidapServer {
 
 export async function anidapFetchServers(slug: string, ep: number): Promise<AnidapServer[]> {
   const referer = `${BASE}/watch?id=${slug}&ep=${ep}&type=sub`
-  const url = `${API}/servers?id=${slug}&ep=${ep}`
+
+  const url = `${API}/servers?id=${slug}&epNum=${ep}`
   const res = await anidapFetch(url, referer)
-  if (!res.ok) throw new Error(`[anidap] servers failed: ${res.status}`)
+  if (!res.ok) {
+    const body = await res.text().catch(() => "")
+    throw new Error(`[anidap] servers failed: ${res.status} — ${body.substring(0, 200)}`)
+  }
 
   const raw = await res.json()
+  console.log("[anidap] servers raw:", JSON.stringify(raw).substring(0, 300))
   const data = raw.data ?? raw
 
   const out: AnidapServer[] = []
@@ -283,6 +288,10 @@ export async function anidapFetchServers(slug: string, ep: number): Promise<Anid
         out.push({ name, type })
       }
     }
+  }
+
+  if (!out.length) {
+    console.log("[anidap] servers OK but no providers found — keys:", JSON.stringify(Object.keys(data)))
   }
   return out
 }
@@ -308,10 +317,14 @@ export async function anidapFetchSources(
     attempted.add(srv.name + srv.type)
 
     try {
-      const referer = `${BASE}/watch?id=${slug}&ep=${ep}&type=${srv.type}&provider=${srv.name}`
-      const url = `${API}/sources?id=${slug}&ep=${ep}&host=${srv.name}&type=${srv.type}`
+      const referer = `${BASE}/watch?id=${slug}&epNum=${ep}&type=${srv.type}&provider=${srv.name}`
+      const url = `${API}/sources?id=${slug}&epNum=${ep}&host=${srv.name}&type=${srv.type}`
       const res = await anidapFetch(url, referer)
-      if (!res.ok) { console.log("[anidap] sources non-ok:", res.status, srv.name, srv.type); continue }
+      if (!res.ok) {
+        const body = await res.text().catch(() => "")
+        console.log("[anidap] sources non-ok:", res.status, srv.name, srv.type, body.substring(0, 150))
+        continue
+      }
 
       const body = await res.json()
       const encrypted: string = body.data
