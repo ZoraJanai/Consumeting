@@ -68,20 +68,13 @@ function saveSetting(key: string, value: any) {
 }
 
 export async function chosenAnime(anime: Anime) {
-  console.log('[chosenAnime] START - anime:', anime.name, 'source:', anime.source);
   let info
   if (anime.source.includes("-")) {
-    console.log('[chosenAnime] Source contains "-", calling getInfoAnimepahe');
     info = await getInfoAnimepahe(anime)
-    console.log('[chosenAnime] getInfoAnimepahe returned');
   } else {
-    console.log('[chosenAnime] Source is numeric, calling getInfoAnilist');
     info = await getInfoAnilist(anime)
-    console.log('[chosenAnime] getInfoAnilist returned');
   }
-  console.log('[chosenAnime] Saving entry');
   saveSetting("entry", info)
-  console.log('[chosenAnime] DONE - returning info');
   return info
 }
 
@@ -298,36 +291,24 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
   }, [animes, onBadgeChange])
 
   async function animeInfo(anime: Anime, action: string) {
-    console.log('[animeInfo] START - anime:', anime.name, 'action:', action);
     showOverlay()
-    console.log('[animeInfo] Overlay shown, fetching anime info...');
-    
     const info = await chosenAnime(anime)
-    console.log('[animeInfo] Info received:', info);
-
     const current = anime.episodes.includes("/")
       ? Number(anime.episodes.split("/")[0])
       : 0
-    console.log('[animeInfo] Current episode:', current);
-
     const auto = episodeNumber(current, Number(info.total), action)
-    console.log('[animeInfo] Auto value:', auto);
 
     // 1) Known exact index
     if (auto! >= 1) {
-      console.log('[animeInfo] Path 1: Known exact index >= 1');
       info.episode = String(auto)
       setEntry(info)
       saveSetting("entry", info)
-      console.log('[animeInfo] Calling episodeThenUpdate with index:', auto);
       await episodeThenUpdate(auto!)
-      console.log('[animeInfo] episodeThenUpdate returned');
       return
     }
 
     // 2) First-time add
     if (auto === 0) {
-      console.log('[animeInfo] Path 2: First-time add (auto === 0)');
       info.episode = "0"
       setEntry(info)
       const cacheEntry: Anime = {
@@ -337,61 +318,40 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
         img: info.img || anime.img,
         isUnread: true
       }
-      console.log('[animeInfo] Adding to cache:', cacheEntry);
       const next = await addCache(cacheEntry)
       setAnimes(next)
       saveSetting(CACHE_KEY, next)
       onCacheSaved?.()
       hideOverlay()
-      console.log('[animeInfo] Path 2 complete');
       return
     }
 
     // 3) Ask once (-1)
     if (auto === -1) {
-      console.log('[animeInfo] Path 3: Ask once (auto === -1)');
       const title = action === "Choose"
         ? `Episode number for ${info.name}`
         : `End episode for ${info.name}`
-      console.log('[animeInfo] Asking user for number, title:', title);
-
       let picked = await askNumberOnce(title, info.total, String(current + 1))
-      console.log('[animeInfo] User picked:', picked);
-      
+
       if (action === "Choose") {
-        console.log('[animeInfo] Path 3a: Choose action');
         info.episode = String(picked)
         setEntry(info)
-        console.log('[animeInfo] Calling episodeThenUpdate with picked:', picked);
         await episodeThenUpdate(picked)
-        console.log('[animeInfo] Path 3a complete');
-      } else { // download
-        console.log('[animeInfo] Path 3b: Download action');
-
-        if (picked > Number(info.total) || 0>= picked){
-          console.log('[animeInfo] Path 3b: Invalid pick, hiding overlay');
+      } else {
+        if (picked > Number(info.total) || 0 >= picked) {
           hideOverlay()
           return
-        }else{
-          console.log('[animeInfo] Path 3b: Valid pick, processing download');
-          info.episode= String(picked)
+        } else {
+          info.episode = String(picked)
           setEntry(info)
           saveSetting("entry", info)
-          console.log('[animeInfo] Path 3b: Entry saved');
-
-          info.episode = String(current+1)
+          info.episode = String(current + 1)
           info.total = String(picked)
-          if(current===0){ 
-            console.log('[animeInfo] Path 3b: current is 0, incrementing picked');
-            picked++;
-          }
-          info.ids = info.ids.slice(Math.max(0, current - 1), Math.max(0, picked-1))
-          console.log('[animeInfo] Path 3b: Queue info prepared:', info);
+          if (current === 0) picked++
+          info.ids = info.ids.slice(Math.max(0, current - 1), Math.max(0, picked - 1))
           setQueueEntry(info)
           saveSetting("queueEntry", info)
-          console.log('[animeInfo] Path 3b: Calling episodeThenUpdate(-44)');
           await episodeThenUpdate(-44)
-          console.log('[animeInfo] Path 3b complete');
         }
         return
       }
@@ -399,55 +359,40 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
 
     // 4) Ask twice (-2)
     if (auto === -2) {
-      console.log('[animeInfo] Path 4: Ask twice (auto === -2)');
       const start = await askNumberOnce(`Start episode for ${info.name}`, info.total, String(current + 1))
-      console.log('[animeInfo] Start episode:', start);
       const end = await askNumberOnce(`End episode for ${info.name}`, info.total, String(start))
-      console.log('[animeInfo] End episode:', end);
-      
-      if (start > Number(info.total) || end > Number(info.total) || start > end || 0 >= start ){
-        console.log('[animeInfo] Invalid range, hiding overlay');
+      if (start > Number(info.total) || end > Number(info.total) || start > end || 0 >= start) {
         hideOverlay()
         return
-      }else{
-        console.log('[animeInfo] Valid range, processing...');
+      } else {
         info.episode = String(end)
         setEntry(info)
         saveSetting("entry", info)
-        
         info.ids = info.ids.slice(Math.max(0, start - 1), Math.max(0, end))
         info.episode = String(start)
         info.total = String(end)
-        
         setQueueEntry(info)
         saveSetting("queueEntry", info)
-        console.log('[animeInfo] Calling episodeThenUpdate(-44)');
         await episodeThenUpdate(-44)
-        console.log('[animeInfo] Path 4 complete');
         return
       }
     }
 
     // 5) Single current only (-3)
     if (auto === -3) {
-      console.log('[animeInfo] Path 5: Single current only (auto === -3)');
-      info.episode = String(current+1)
+      info.episode = String(current + 1)
       setEntry(info)
       saveSetting("entry", info)
-      
       info.ids = info.ids.slice(current, current + 1)
-      info.episode=String(current+1)
-      info.total=String(current+1)
+      info.episode = String(current + 1)
+      info.total = String(current + 1)
       setQueueEntry(info)
-      console.log('[animeInfo] Calling episodeThenUpdate(-44)');
       await episodeThenUpdate(-44)
-      console.log('[animeInfo] Path 5 complete');
       return
     }
 
     // 6) Confirm resume (-5)
     if (auto === -5) {
-      console.log('[animeInfo] Path 6: Last episode warning (auto === -5)');
       if (action === "DownloadAll") {
         await Dialog.alert({
           title: "All caught up",
@@ -462,13 +407,11 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
         })
       }
       hideOverlay()
-      console.log('[animeInfo] Path 6 complete');
       return
     }
 
     // 7) Download all unwatched (-6)
     if (auto === -6) {
-      console.log('[animeInfo] Path 7: Download all unwatched (auto === -6)');
       const start = current + 1
       const end = Number(info.total)
       if (start > end) {
@@ -517,11 +460,9 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
       onQueueSaved?.()
 
       hideOverlay()
-      console.log('[animeInfo] Path 7 complete');
       return
     }
-    
-    console.log('[animeInfo] No path matched! auto =', auto);
+    console.error('[animeInfo] no path matched, auto =', auto);
   }
 
   function askNumberOnce(title: string, total: string, initial: string): Promise<number> {
@@ -563,47 +504,30 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
       async (options) => await askQualityOnce("Which quality?", options)  
     )
 
-    console.log('[episodeThenUpdate] downloadEpisode returned');
     setDownloading(false)
     const [cacheItem, queueItem] = tuple
-    console.log('[episodeThenUpdate] Tuple extracted - cache:', cacheItem.name, 'queue:', queueItem.name);
 
-    // 1) update CACHE (Anime[])
-    console.log('[episodeThenUpdate] Updating cache...');
     const updatedCache = await addCache(cacheItem)
     setAnimes(updatedCache)
     saveSetting(CACHE_KEY, updatedCache)
     onCacheSaved?.()
-    console.log('[episodeThenUpdate] Cache updated');
 
-    // 2) update QUEUE (DownloadAnime[])
-    console.log('[episodeThenUpdate] Updating queue...');
     const updatedQueue = await addQueue(queueItem)
     setQueue(updatedQueue)
     saveSetting(QUEUE_KEY, updatedQueue)
     onQueueSaved?.()
-    console.log('[episodeThenUpdate] Queue updated');
 
     hideOverlay()
-    console.log('[episodeThenUpdate] Download path complete');
     return
   } else {
-    console.log('[episodeThenUpdate] Path: Watch episode (index:', index, ')');
-    console.log('[episodeThenUpdate] Calling getEpisode...');
-    
     const anime = await getEpisode(index, async (options) => {
       return await askQualityOnce("Which quality?", options)
     })
-    console.log('[episodeThenUpdate] getEpisode returned:', anime);
-    
-    console.log('[episodeThenUpdate] Adding to cache...');
     const next = await addCache(anime)
     setAnimes(next)
     saveSetting(CACHE_KEY, next)
     onCacheSaved?.()
-    console.log('[episodeThenUpdate] Watch path complete');
   }
-  console.log('[episodeThenUpdate] END');
   }
 
   async function toggleUnread(anime: Anime) {
@@ -695,7 +619,7 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
           setDownloadDone(doneEps)
         }
       } catch (err) {
-        console.log("[downloadAllUnwatched] failed for", anime.name, err)
+        console.error("[downloadAllUnwatched] failed for", anime.name, err)
       }
     }
 
@@ -735,7 +659,7 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
         isUnread: cur < newTotal
       })
     } catch (err) {
-      console.log(`refresh failed for ${anime.name}`, err)
+      console.error(`refresh failed for ${anime.name}`, err)
       updated.push(anime) // keep old item if refresh fails
     } finally {
       setRefreshDone(d => d + 1)

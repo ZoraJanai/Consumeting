@@ -136,14 +136,21 @@ function kwikDecrypt(fullString: string, key: string, v1: number, v2: number): s
 }
 
 // ─── MP4 extractor (primary path) ──────────────────────────────────────────
-// Fetches the Kwik page, decrypts the hidden form, POSTs to get the
-// 302 Location redirect = direct signed MP4/stream CDN URL.
+// Aniyomi approach: the embed URL (/e/) only has the m3u8 packed inline.
+// Appending /i triggers a redirect to the download page, which holds the
+// encrypted form params (action + _token) needed to get the signed CDN URL.
 async function extractKwikMp4Url(kwikUrl: string): Promise<string> {
-  const html = await (await fetch(kwikUrl, {
-    headers: paheHeaders({ referer: getDirectBaseUrl() + "/", mode: "navigate" }),
-  })).text()
+  // Step 1: hit /i to land on the download page (follows redirects automatically)
+  const downloadRes = await fetch(kwikUrl + "/i", {
+    headers: {
+      "Origin": "https://kwik.cx",
+      "Referer": "https://kwik.cx/",
+    },
+  })
+  const html = await downloadRes.text()
+  const downloadPageUrl = downloadRes.url || kwikUrl
 
-  // Find encrypted params: ("fullString", ignored, "key", v1, v2, ignored)
+  // Step 2: decrypt the obfuscated form params
   const pm = /\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)/.exec(html)
   if (!pm) throw new Error("[kwikMp4] decrypt params not found")
 
@@ -153,19 +160,17 @@ async function extractKwikMp4Url(kwikUrl: string): Promise<string> {
   const token  = /value="([^"]+)"/.exec(decrypted)?.[1]
   if (!action || !token) throw new Error(`[kwikMp4] form parse failed: ${decrypted.substring(0, 200)}`)
 
-  // POST → CDN redirect; iOS URLSession follows the 302 by default.
-  // response.url is the final URL after all redirects (the signed CDN link).
+  // Step 3: POST → CDN redirect; response.url is the final signed CDN URL.
   const postRes = await fetch(action, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       "Origin": "https://kwik.cx",
-      "Referer": kwikUrl,
+      "Referer": downloadPageUrl,
     },
     body: `_token=${encodeURIComponent(token)}`,
   })
 
-  // response.url is the final URL after all redirects (the signed CDN link)
   const finalUrl = postRes.url
   if (!finalUrl || finalUrl === action) throw new Error(`[kwikMp4] no redirect (status ${postRes.status})`)
 
@@ -190,12 +195,10 @@ async function extractKwikHlsUrl(kwikUrl: string): Promise<string> {
   return m3u8Match[0]
 }
 
-// ─── Unified extractor: MP4 first, HLS fallback ────────────────────────────
+// ─── Unified extractor: MP4 first (/i download page), HLS fallback ─────────
 async function extractKwikUrl(kwikUrl: string): Promise<string> {
   try {
-    const mp4Url = await extractKwikMp4Url(kwikUrl)
-    console.log("[kwik] MP4 URL:", mp4Url.substring(0, 80))
-    return mp4Url
+    return await extractKwikMp4Url(kwikUrl)
   } catch (mp4Err) {
     console.error("[kwik] MP4 failed, falling back to HLS:", String(mp4Err))
     return extractKwikHlsUrl(kwikUrl)
@@ -258,7 +261,7 @@ async function scrapePlayPageSources(episodeId: string): Promise<QualityMap> {
 }
 
 export async function getAnimepaheSources(episodeId: string): Promise<QualityMap> {
-  console.log("[getAnimepaheSources] Fetching:", episodeId)
+  // console.log("[getAnimepaheSources] Fetching:", episodeId)
 
   if (useApiMode()) {
     return paheFetchStreamingSourcesFromApi(episodeId)
@@ -355,104 +358,67 @@ export async function getEpisode(
   index: number,
   askQuality?: (options: string[]) => Promise<string>
 ): Promise<Anime> {
-  console.log("[getEpisode] START - index:", index);
+  console.log("[getEpisode] index:", index)
   showOverlay()
-  console.log("[getEpisode] Overlay shown");
 
   const noDownload: Anime = { name: "", source: "", episodes: "", img: "", isUnread: false }
-  if (index === -44) {
-    console.log("[getEpisode] No download, returning early");
-    return noDownload;
-  }
+  if (index === -44) return noDownload
 
-  console.log("[getEpisode] Loading settings");
   const entry = loadSetting("entry", PlaceholderEntry)
-  console.log("[getEpisode] Entry loaded:", entry);
-  
   const autoQuality = loadSetting(STORAGE_KEYS.AUTO_QUALITY, true)
-  console.log("[getEpisode] Auto quality:", autoQuality);
-  
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
-  console.log("[getEpisode] Quality order:", order);
-  
   const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
-  console.log("[getEpisode] Player:", player);
 
   const episodeId = entry.ids[index - 1]
-  console.log("[getEpisode] Episode ID:", episodeId);
-  console.log("[getEpisode] Calling getAnimepaheSources...");
-  
+  console.log("[getEpisode] episodeId:", episodeId)
+
   const sources = await getAnimepaheSources(episodeId)
-  console.log("[getEpisode] Sources received:", sources);
-  
+  console.log("[getEpisode] sources:", Object.keys(sources))
+
   const tags = Object.keys(sources)
-  console.log("[getEpisode] Available tags:", tags);
-
-
-
-
   let selectedUrl: string | undefined
-  console.log("[getEpisode] Selecting quality...");
 
   if (autoQuality) {
-    console.log(order)
-    console.log("[getEpisode] Auto quality mode");
     selectedUrl = qualityAutoSelect(sources, order)
-    console.log("[getEpisode] Auto selected:", selectedUrl);
-    
     if (!selectedUrl) {
-      console.log("[getEpisode] No auto match, asking user");
       if (!askQuality) throw new Error("askQuality callback not provided")
       const pickedTag = await askQuality(tags)
-      console.log("[getEpisode] User picked:", pickedTag);
-
       const filtered = order.filter(q => q !== pickedTag)
       const newOrder = [
         ...filtered.slice(0, 2),
         pickedTag,
         ...filtered.slice(2)
       ]
-
       saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
-      console.log("[getEpisode] Updated quality order");
       order = newOrder
-
       selectedUrl = sources[pickedTag]
-      console.log("[getEpisode] Selected URL:", selectedUrl);
     }
   } else {
-    console.log("[getEpisode] Manual quality mode");
     if (!askQuality) throw new Error("askQuality callback not provided")
     const pickedTag = await askQuality(tags)
-    console.log("[getEpisode] User picked:", pickedTag);
     selectedUrl = sources[pickedTag]
-    console.log("[getEpisode] Selected URL:", selectedUrl);
   }
 
-  console.log("[getEpisode] Hiding overlay");
   hideOverlay()
 
-  // selectedUrl is the direct signed CDN URL from the MP4 extractor (no proxy needed).
-  // If MP4 failed and we fell back to HLS, wrap with rust proxy for header injection.
+  // selectedUrl is the direct CDN URL (MP4) or m3u8 (HLS fallback).
+  // HLS needs the rust proxy for header injection; MP4 opens directly.
   const isHls = selectedUrl.includes(".m3u8")
   let openUrl: string
   if (isHls) {
     const rustProxyBase = getRustProxyUrl()
     openUrl = `${rustProxyBase}/?url=${encodeURIComponent(selectedUrl)}&origin=https://kwik.cx`
-    console.log("[getEpisode] HLS fallback — proxy URL:", openUrl);
+    console.log("[getEpisode] HLS fallback, proxy:", openUrl.substring(0, 80))
   } else {
     openUrl = selectedUrl
-    console.log("[getEpisode] Direct MP4 URL:", openUrl.substring(0, 80));
+    console.log("[getEpisode] MP4:", openUrl.substring(0, 80))
   }
 
   const finalUrl = player === "nPlayer" ? "-" + openUrl : "://" + openUrl
-  console.log("[getEpisode] Opening in player:", (player + finalUrl).substring(0, 80));
+  console.log("[getEpisode] opening:", (player + finalUrl).substring(0, 100))
   await Safari.openURL((player + finalUrl).toLowerCase())
-  console.log("[getEpisode] Safari opened");
 
   const stillUnread = index !== Number(entry.total)
-  console.log("[getEpisode] Still unread:", stillUnread);
-  
   const cacheEntry: Anime = {
     name: entry.name,
     source: entry.id,
@@ -460,11 +426,7 @@ export async function getEpisode(
     img: entry.img,
     isUnread: stillUnread
   }
-  console.log("[getEpisode] Cache entry created:", cacheEntry);
-
-  console.log("[getEpisode] Adding to cache");
   addCache(cacheEntry)
-  console.log("[getEpisode] DONE");
   return cacheEntry
 }
 

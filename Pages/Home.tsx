@@ -247,14 +247,10 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
   async function animeInfo(anime: Anime, action: string) {
     showOverlay()
     const info = await chosenAnime(anime)
-    console.log(info)
-
     const current = anime.episodes.includes("/")
       ? Number(anime.episodes.split("/")[0])
       : 0
-
     const auto = episodeNumber(current, Number(info.total), action)
-    console.log(auto)
 
     // 1) Known exact index
     if (auto! >= 1) {
@@ -297,21 +293,17 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
         await episodeThenUpdate(picked)
       } else { // download
 
-        if (picked > Number(info.total) || 0>= picked){
+        if (picked > Number(info.total) || 0 >= picked) {
           hideOverlay()
           return
-        }else{
-        console.log('inside -1')
-        info.episode= String(picked)
+        } else {
+        info.episode = String(picked)
         setEntry(info)
         saveSetting("entry", info)
-
-        
-        info.episode = String(current+1)
+        info.episode = String(current + 1)
         info.total = String(picked)
-        if(current===0){ picked++}
-        info.ids = info.ids.slice(Math.max(0, current - 1), Math.max(0, picked-1))
-        console.log(info)
+        if (current === 0) { picked++ }
+        info.ids = info.ids.slice(Math.max(0, current - 1), Math.max(0, picked - 1))
         setQueueEntry(info)
         saveSetting("queueEntry", info)
         await episodeThenUpdate(-44)

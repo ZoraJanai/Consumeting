@@ -28,9 +28,7 @@ interface BaseInfo {
 // ===== ANIMEPAHE API =====
 
 async function fetchAnimepaheInfo(id: string) {
-  console.log('[fetchAnimepaheInfo] START - id:', id);
   const episodes = await paheFetchAllEpisodes(id);
-  console.log('[fetchAnimepaheInfo] DONE - episodes:', episodes.length);
   return { id, episodes };
 }
 
@@ -152,12 +150,9 @@ const searchAnilist = async (query: string): Promise<Anime[] | string> => {
 
 // Search Animepahe via self-hosted animepahe-api
 const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
-  console.log('[searchAnimepahe] START - query:', query);
   try {
     const results = await paheSearch(query);
-    console.log('[searchAnimepahe] Got', results.length, 'results');
-
-    const output: Anime[] = results.map(item => ({
+    return results.map(item => ({
       name: item.title,
       source: String(item.session),
       episodes: "0",
@@ -165,14 +160,6 @@ const searchAnimepahe = async (query: string): Promise<Anime[] | string> => {
       isUnread: false,
       paheID: item.id != null ? String(item.id) : undefined,
     }));
-
-    if (output.length > 0) {
-      console.log("[searchAnimepahe] sample poster raw:", results[0].poster);
-      console.log("[searchAnimepahe] sample poster normalized:", output[0].img);
-    }
-
-    console.log('[searchAnimepahe] DONE - returning', output.length, 'results');
-    return output;
   } catch (error) {
     console.error('[searchAnimepahe] ERROR:', error);
     throw error;
@@ -347,17 +334,11 @@ export async function enhanceAnimepaheResultsWithExternalImages(list: Anime[]): 
 
 // Get anime info from Anilist with Animepahe episodes
 const getInfoAnilist = async (anime: Anime): Promise<BaseInfo> => {
-  console.log('[getInfoAnilist] START - anime:', anime.name, 'source:', anime.source);
   try {
     const requestData = anilistInfoQuery(anime.source);
-    console.log('[getInfoAnilist] Fetching Anilist data');
-
     const response = await fetch(anilistGraphqlUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(requestData),
     });
 
@@ -366,92 +347,46 @@ const getInfoAnilist = async (anime: Anime): Promise<BaseInfo> => {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    console.log('[getInfoAnilist] Parsing Anilist data');
     const anilistData = await response.json();
     const media = anilistData.data.Media;
-    console.log('[getInfoAnilist] Got media:', media.title.romaji || media.title.english);
-
-    // Get episodes from Animepahe - try both romaji and english titles
     const romajiTitle = media.title.romaji;
     const englishTitle = media.title.english;
-    console.log('[getInfoAnilist] Searching Animepahe - romaji:', romajiTitle, 'english:', englishTitle);
-    
+
     let episodes: any[] = [];
     let matchFound = false;
-    
-    // Try romaji title first
+
     if (romajiTitle) {
       const searchResults = await searchAnimepahe(romajiTitle);
-      console.log('[getInfoAnilist] Romaji search returned', Array.isArray(searchResults) ? searchResults.length : 0, 'results');
-      
       if (Array.isArray(searchResults) && searchResults.length > 0) {
-        // Try to find exact match first
-        let match = searchResults.find(result => 
-          result.name.toLowerCase() === romajiTitle.toLowerCase()
-        );
-        
-        // If no exact match, use first result
-        if (!match) {
-          match = searchResults[0];
-          console.log('[getInfoAnilist] No exact match, using first result:', match.name);
-        } else {
-          console.log('[getInfoAnilist] Found exact match:', match.name);
-        }
-        
-        console.log('[getInfoAnilist] Fetching Animepahe info for:', match.source);
+        const match = searchResults.find(r => r.name.toLowerCase() === romajiTitle.toLowerCase()) ?? searchResults[0];
         const animepaheInfo = await fetchAnimepaheInfo(match.source);
         episodes = animepaheInfo.episodes;
         matchFound = true;
-        console.log('[getInfoAnilist] Got', episodes.length, 'episodes from Animepahe');
       }
     }
-    
-    // If romaji didn't work, try english title
+
     if (!matchFound && englishTitle && englishTitle !== romajiTitle) {
-      console.log('[getInfoAnilist] Trying english title:', englishTitle);
       const searchResults = await searchAnimepahe(englishTitle);
-      console.log('[getInfoAnilist] English search returned', Array.isArray(searchResults) ? searchResults.length : 0, 'results');
-      
       if (Array.isArray(searchResults) && searchResults.length > 0) {
-        let match = searchResults.find(result => 
-          result.name.toLowerCase() === englishTitle.toLowerCase()
-        );
-        
-        if (!match) {
-          match = searchResults[0];
-          console.log('[getInfoAnilist] No exact match, using first result:', match.name);
-        } else {
-          console.log('[getInfoAnilist] Found exact match:', match.name);
-        }
-        
-        console.log('[getInfoAnilist] Fetching Animepahe info for:', match.source);
+        const match = searchResults.find(r => r.name.toLowerCase() === englishTitle.toLowerCase()) ?? searchResults[0];
         const animepaheInfo = await fetchAnimepaheInfo(match.source);
         episodes = animepaheInfo.episodes;
-        console.log('[getInfoAnilist] Got', episodes.length, 'episodes from Animepahe');
       }
     }
 
     if (episodes.length === 0) {
-      console.warn('[getInfoAnilist] WARNING: No episodes found on Animepahe for:', romajiTitle || englishTitle);
+      console.warn('[getInfoAnilist] no episodes found for:', romajiTitle || englishTitle);
     }
 
-    const ids: string[] = [];
-    for (const ep of episodes) {
-      ids.push(ep.id);
-    }
-    console.log('[getInfoAnilist] Mapped', ids.length, 'episode IDs');
-
-    const output: BaseInfo = {
+    const ids = episodes.map((ep: any) => ep.id as string);
+    return {
       total: String(ids.length),
-      ids: ids,
+      ids,
       name: media.title.romaji || media.title.english,
       id: media.id,
       episode: "none",
       img: anime.img
     };
-
-    console.log('[getInfoAnilist] DONE - returning output:', output);
-    return output;
   } catch (error) {
     console.error('[getInfoAnilist] ERROR:', error);
     throw error;
@@ -460,52 +395,30 @@ const getInfoAnilist = async (anime: Anime): Promise<BaseInfo> => {
 
 // Get anime info from Animepahe
 const getInfoAnimepahe = async (anime: Anime): Promise<BaseInfo> => {
-  console.log('[getInfoAnimepahe] START - anime:', anime.name);
   try {
-    console.log('[getInfoAnimepahe] Searching Animepahe');
     const search = await searchAnimepahe(anime.name);
-    console.log('[getInfoAnimepahe] Search returned', Array.isArray(search) ? search.length : 0, 'results');
-    
     let match: Anime | undefined;
     if (Array.isArray(search)) {
-      match = search.find(obj => obj.name === anime.name);
-      if (match) {
-        console.log('[getInfoAnimepahe] Got exact match:', match.name);
-      } else {
-        console.log('[getInfoAnimepahe] No exact match, using first result');
-        match = search[0];
-      }
+      match = search.find(obj => obj.name === anime.name) ?? search[0];
     } else {
-      console.error('[getInfoAnimepahe] Search failed:', search);
+      console.error('[getInfoAnimepahe] search failed:', search);
       throw new Error("Search failed: " + search);
     }
-
     if (!match) {
-      console.error('[getInfoAnimepahe] No results found');
+      console.error('[getInfoAnimepahe] no results for:', anime.name);
       throw new Error("No results found");
     }
 
-    console.log('[getInfoAnimepahe] Fetching info for source:', match.source);
     const animepaheInfo = await fetchAnimepaheInfo(match.source);
-    console.log('[getInfoAnimepahe] Got', animepaheInfo.episodes.length, 'episodes');
-
-    const ids: string[] = [];
-    for (const ep of animepaheInfo.episodes) {
-      ids.push(ep.id);
-    }
-    console.log('[getInfoAnimepahe] Mapped', ids.length, 'episode IDs');
-
-    const output: BaseInfo = {
+    const ids = animepaheInfo.episodes.map((ep: any) => ep.id as string);
+    return {
       total: String(ids.length),
-      ids: ids,
+      ids,
       name: match.name,
       id: animepaheInfo.id,
       episode: "none",
       img: anime.img
     };
-
-    console.log('[getInfoAnimepahe] DONE - returning output:', output);
-    return output;
   } catch (error) {
     console.error('[getInfoAnimepahe] ERROR:', error);
     throw error;
