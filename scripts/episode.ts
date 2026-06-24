@@ -14,11 +14,7 @@ import {
   captureKwikCookies,
   getStoredKwikCookies,
   isWebViewSessionActive,
-  openKwikPage,
   paheHeaders,
-  submitKwikFormAndCapture,
-  waitForPaheWinCapture,
-  webViewNavigateFrame,
 } from "./animepaheSession"
 
 // ---- Types ----
@@ -102,135 +98,41 @@ function sanitizeFilename(name: string): string {
     .trim()
 }
 
-function getRustProxyUrl(): string {
-  return loadSetting(STORAGE_KEYS.RUST_PROXY_URL, 'https://rust-proxy-hvm4.onrender.com')
-}
 
 function useApiMode(): boolean {
   return loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "").trim().length > 0
 }
 
-// ─── kwikDecrypt — mirrors KwikExtractor.kt (Aniyomi) ──────────────────────
-// Decodes the obfuscated script on the kwik.cx download page.
-// Parameters come from the eval() call: ("fullString", radix, "key", v1, v2, count)
-function kwikDecrypt(fullString: string, key: string, v1: number, v2: number): string {
-  // Build char→index map using first occurrence of each char in key
-  const indexMap = new Map<string, number>()
-  for (let i = 0; i < key.length; i++) {
-    if (!indexMap.has(key[i])) indexMap.set(key[i], i)
+// ─── HLS extractor — mirrors Aniyomi getHlsVideo (kwik.cx/e/xxx embed) ──────
+//
+// HAR analysis: Aniyomi hits kwik.cx/e/xxx with:
+//   Referer: https://animepahe.pw/
+//   Cookie: srv=s0; kwik_session=xxx  (no cf_clearance — /e/ is not CF-protected)
+//
+// kwik_session is obtained during boot captureKwikCookies() and reused here.
+// On failure the session is refreshed once before giving up.
+async function extractKwikHlsUrl(kwikEmbedUrl: string, animepaheBase: string): Promise<string> {
+  const buildHeaders = () => {
+    const h = paheHeaders({ referer: animepaheBase + "/", mode: "navigate" })
+    const { cookies, userAgent } = getStoredKwikCookies()
+    if (cookies) h["Cookie"] = cookies
+    if (userAgent) h["User-Agent"] = userAgent
+    return h
   }
 
-  const delimiter = key[v2]
-  const parts = fullString.split(delimiter)
-  parts.pop() // dropLast(1) — trailing empty segment
-
-  let result = ""
-  for (const chunk of parts) {
-    const digits = chunk
-      .split("")
-      .map(c => {
-        const idx = indexMap.get(c)
-        return idx !== undefined ? idx.toString() : ""
-      })
-      .join("")
-    const decimal = parseInt(digits, v2)
-    if (isNaN(decimal)) continue
-    result += String.fromCharCode(decimal - v1)
-  }
-  return result
-}
-
-// ─── MP4 extractor — mirrors KwikExtractor.kt (noRedirectClient pattern) ─────
-//
-// kwik.cx CF session is handled the same way as animepahe.pw:
-//   captureKwikCookies() navigates the background WebView to kwik.cx once,
-//   solves the CF challenge, and saves cf_clearance to storage for reuse.
-//   On 403, the session is refreshed automatically (mirrors fetchKwikHtml).
-//
-// Full flow (1:1 Aniyomi getStreamUrlFromKwik):
-//   1. webViewNavigateFrame(paheWin/i) → capture kwik URL from 302 redirect
-//   2. fetchKwikHtml(kwikUrl) → HTML page with saved CF session, refresh on 403
-//   3. kwikDecrypt → form action + _token
-//   4. webViewSubmitForm(_token) → iframe POST → capture CDN URL from 302 redirect
-
-/**
- * Open the kwik.cx download page in the background WebView and return its HTML.
- * The WebView is left on kwik.cx — caller must call submitKwikFormAndCapture()
- * immediately after to POST the form with the correct Referer/Origin.
- *
- * Ensures a live CF session exists first; refreshes on missing eval block.
- */
-async function openKwikPageWithSession(kwikUrl: string): Promise<string> {
-  if (!getStoredKwikCookies().cookies) {
-    console.log("[kwikMp4] no saved kwik cookies — capturing session first")
+  if (!getStoredKwikCookies().cookies && isWebViewSessionActive()) {
+    console.log("[kwikHls] no saved kwik cookies — capturing session first")
     await captureKwikCookies()
   }
 
-  let html = await openKwikPage(kwikUrl)
-  if (html.includes("eval(function(")) return html
+  let response = await fetch(kwikEmbedUrl, { headers: buildHeaders() })
 
-  // CF might have expired — refresh and retry (openKwikPage navigates back internally on failure)
-  console.log("[kwikMp4] eval block missing — refreshing CF session")
-  await captureKwikCookies()
-  html = await openKwikPage(kwikUrl)
-  if (!html.includes("eval(function(")) {
-    throw new Error("[kwikMp4] kwik page missing eval block after CF refresh (html len: " + html.length + ")")
-  }
-  return html
-}
-
-async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Promise<string> {
-  if (!isWebViewSessionActive()) {
-    throw new Error("[kwikMp4] WebView session required for CF bypass")
+  if (!response.ok && isWebViewSessionActive()) {
+    console.log("[kwikHls] status", response.status, "— refreshing kwik session")
+    await captureKwikCookies()
+    response = await fetch(kwikEmbedUrl, { headers: buildHeaders() })
   }
 
-  const FRAME = "__kwik_resolve__"
-  console.log("[kwikMp4] step1 start — paheWinUrl:", paheWinUrl)
-
-  // Step 1 — capture kwik URL from pahe.win redirect.
-  // pahe.win/xxx/i returns 302 → image.thum.io/.../https://kwik.cx/f/xxx
-  // interceptPaheWinRedirect unwraps the kwik URL and blocks the iframe before
-  // it reaches image.thum.io (we only need the URL, not the navigation).
-  const capture1 = waitForPaheWinCapture(22000)
-  await webViewNavigateFrame(paheWinUrl + "/i", FRAME)
-  const kwikUrl = await capture1
-  console.log("[kwikMp4] step1 done — kwikUrl:", kwikUrl.slice(0, 120))
-
-  // Direct CDN URL (pahe.win skipped kwik entirely)
-  if (!kwikUrl.includes("kwik.cx")) {
-    console.log("[kwikMp4] step1 direct CDN URL — done")
-    return kwikUrl
-  }
-
-  // Step 2 — open kwik.cx download page in WebView (stays on kwik.cx after)
-  const html = await openKwikPageWithSession(kwikUrl)
-  console.log("[kwikMp4] step2 html length:", html.length, "has eval:", html.includes("eval(function("))
-
-  // Step 3 — decrypt obfuscated eval() params
-  const pm = /\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)/.exec(html)
-  if (!pm) {
-    console.log("[kwikMp4] step3 decrypt params not found — html snippet:", html.slice(0, 300))
-    throw new Error("[kwikMp4] decrypt params not found")
-  }
-  const decrypted = kwikDecrypt(pm[1], pm[2], parseInt(pm[3], 10), parseInt(pm[4], 10))
-  const action = /action="([^"]+)"/.exec(decrypted)?.[1]
-  const token = /value="([^"]+)"/.exec(decrypted)?.[1]
-  console.log("[kwikMp4] step3 decrypted — action:", action?.slice(0, 80), "token len:", token?.length)
-  if (!action || !token) throw new Error("[kwikMp4] form parse failed")
-
-  // Step 4 — submit form inline from within kwik.cx page (correct Referer/Origin),
-  // capture the CDN redirect URL, then navigate back to animepahe.pw
-  console.log("[kwikMp4] step4 submitting form from kwik.cx page")
-  const cdnUrl = await submitKwikFormAndCapture(action, token)
-  console.log("[kwikMp4] step4 done — CDN URL:", cdnUrl.slice(0, 120))
-  return cdnUrl
-}
-
-// ─── HLS extractor (Aniyomi: getHlsStreamUrl — eval packed JS, find m3u8) ──
-async function extractKwikHlsUrl(kwikEmbedUrl: string, animepaheBase: string): Promise<string> {
-  const response = await fetch(kwikEmbedUrl, {
-    headers: paheHeaders({ referer: animepaheBase + "/", mode: "navigate" }),
-  })
   if (!response.ok) throw new Error(`[kwikHls] fetch failed: ${response.status}`)
 
   const html = await response.text()
@@ -240,23 +142,9 @@ async function extractKwikHlsUrl(kwikEmbedUrl: string, animepaheBase: string): P
   const unpacked = eval(packedMatch[2].replace("eval", ""))
   const m3u8Match = unpacked.match(/https.*?m3u8/)
   if (!m3u8Match) throw new Error("[kwikHls] m3u8 URL not found")
-  return m3u8Match[0]
-}
 
-// ─── Unified extractor: MP4 first (paheWinUrl), HLS fallback (kwikEmbedUrl) ─
-async function extractKwikUrl(
-  kwikEmbedUrl: string,
-  paheWinUrl: string | null,
-  animepaheBase: string,
-): Promise<string> {
-  if (paheWinUrl) {
-    try {
-      return await extractKwikMp4Url(paheWinUrl, animepaheBase)
-    } catch (mp4Err) {
-      console.error("[kwik] MP4 failed, falling back to HLS:", String(mp4Err))
-    }
-  }
-  return extractKwikHlsUrl(kwikEmbedUrl, animepaheBase)
+  console.log("[kwikHls] m3u8:", m3u8Match[0].slice(0, 100))
+  return m3u8Match[0]
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -272,53 +160,25 @@ function decodeHtmlEntities(text: string): string {
   return text.replace(/&[a-z0-9#]+;/gi, entity => entities[entity] || entity)
 }
 
-// Extract pahe.win download hrefs from div#pickDownload (Aniyomi: downloadLinks)
-function extractDownloadLinks(html: string): string[] {
-  const start = html.indexOf('id="pickDownload"')
-  if (start === -1) return []
-  // Grab a generous window after the section start; direct <a> children come first
-  const section = html.substring(start, start + 4000)
-  const end = section.indexOf("</div>")
-  const relevant = end !== -1 ? section.substring(0, end) : section
-  const links: string[] = []
-  const hrefRe = /<a[^>]+href="([^"]+)"/g
-  let m
-  while ((m = hrefRe.exec(relevant)) !== null) {
-    links.push(m[1])
-  }
-  return links
-}
-
-// Parse both div#resolutionMenu buttons and div#pickDownload links, paired by
-// index exactly as Aniyomi does (withIndex + downloadLinks.getOrNull(index)).
-function parseResolutionMenu(html: string): { kwikUrl: string; paheWinUrl: string | null; quality: string }[] {
-  const downloadLinks = extractDownloadLinks(html)
-
-  const result: { kwikUrl: string; paheWinUrl: string | null; quality: string }[] = []
+// Parse div#resolutionMenu buttons — extract kwikUrl (data-src) and quality label.
+// Skips English-audio variants (data-audio="eng") exactly as Aniyomi does.
+function parseResolutionMenu(html: string): { kwikUrl: string; quality: string }[] {
+  const result: { kwikUrl: string; quality: string }[] = []
   const buttonRegex = /<button[^>]*class="dropdown-item[^"]*"[^>]*>([\s\S]*?)<\/button>/g
   let match
-  let idx = 0
 
   while ((match = buttonRegex.exec(html)) !== null) {
     const fullButton = match[0]
     const innerText = match[1]
     const srcMatch = /data-src="([^"]*)"/.exec(fullButton)
-    if (!srcMatch) { idx++; continue }
+    if (!srcMatch) continue
 
     const audioMatch = /data-audio="([^"]*)"/.exec(fullButton)
-    const isEng = audioMatch?.[1]?.toLowerCase() === "eng"
+    if (audioMatch?.[1]?.toLowerCase() === "eng") continue
 
     const textMatch = /^\s*(.*?)\s*(?:<span|$)/.exec(innerText)
     const quality = decodeHtmlEntities(textMatch ? textMatch[1].trim() : innerText.trim())
-
-    if (!isEng) {
-      result.push({
-        kwikUrl: srcMatch[1],
-        paheWinUrl: downloadLinks[idx] ?? null,
-        quality,
-      })
-    }
-    idx++
+    result.push({ kwikUrl: srcMatch[1], quality })
   }
 
   return result
@@ -332,7 +192,7 @@ async function scrapePlayPageSources(episodeId: string): Promise<QualityMap> {
 
   for (const entry of entries) {
     try {
-      const url = await extractKwikUrl(entry.kwikUrl, entry.paheWinUrl, base)
+      const url = await extractKwikHlsUrl(entry.kwikUrl, base)
       const parts = entry.quality.split(" · ")
       const tag = "-" + (parts[1] ?? parts[0]).trim()
       dict[tag] = url
@@ -485,18 +345,8 @@ export async function getEpisode(
 
   hideOverlay()
 
-  // selectedUrl is the direct CDN URL (MP4) or m3u8 (HLS fallback).
-  // HLS needs the rust proxy for header injection; MP4 opens directly.
-  const isHls = selectedUrl.includes(".m3u8")
-  let openUrl: string
-  if (isHls) {
-    const rustProxyBase = getRustProxyUrl()
-    openUrl = `${rustProxyBase}/?url=${encodeURIComponent(selectedUrl)}&origin=https://kwik.cx`
-    console.log("[getEpisode] HLS fallback, proxy:", openUrl.substring(0, 80))
-  } else {
-    openUrl = selectedUrl
-    console.log("[getEpisode] MP4:", openUrl.substring(0, 80))
-  }
+  const openUrl = selectedUrl
+  console.log("[getEpisode] m3u8:", openUrl.substring(0, 100))
 
   const finalUrl = player === "nPlayer" ? "-" + openUrl : "://" + openUrl
   console.log("[getEpisode] opening:", (player + finalUrl).substring(0, 100))
@@ -574,13 +424,7 @@ export async function downloadEpisode(
     }
 
     const number = Number(entry.episode) + i
-    // If extractKwikUrl returned an HLS m3u8 (fallback), wrap with rust proxy.
-    // If it returned a direct MP4 CDN URL, use it directly — no proxy needed.
-    const isHls = url.includes(".m3u8")
-    const dlUrl = isHls
-      ? `${getRustProxyUrl()}/?url=${encodeURIComponent(url)}&origin=https://kwik.cx`
-      : url
-    const link = `ffmpeg -i "${dlUrl}" -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`
+    const link = `ffmpeg -headers "Referer: https://kwik.cx/\\r\\nOrigin: https://kwik.cx\\r\\n" -i "${url}" -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`
     links.push(link)
 
     onProgress?.(i + 1, total)
