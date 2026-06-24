@@ -10,7 +10,7 @@ import {
   getDirectBaseUrl,
   paheFetchStreamingSourcesFromApi,
 } from "./animepaheClient"
-import { paheHeaders } from "./animepaheSession"
+import { paheHeaders, resolvePaheWinUrl } from "./animepaheSession"
 
 // ---- Types ----
 
@@ -101,90 +101,87 @@ function useApiMode(): boolean {
   return loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "").trim().length > 0
 }
 
-// ─── Kwik decrypt (ported from Aniyomi KwikExtractor.kt) ───────────────────
-// Decodes the obfuscated form params hidden in the Kwik page HTML.
-// The pattern ("fullString", ignored, "key", v1, v2, ignored) encodes
-// the form action + _token using a custom base-v2 cipher keyed on `key`.
+// ─── kwikDecrypt — mirrors KwikExtractor.kt (Aniyomi) ──────────────────────
+// Decodes the obfuscated script on the kwik.cx download page.
+// Parameters come from the eval() call: ("fullString", radix, "key", v1, v2, count)
 function kwikDecrypt(fullString: string, key: string, v1: number, v2: number): string {
-  // Map each character in key to its first occurrence index
-  const keyMap = new Map<string, number>()
+  // Build char→index map using first occurrence of each char in key
+  const indexMap = new Map<string, number>()
   for (let i = 0; i < key.length; i++) {
-    if (!keyMap.has(key[i])) keyMap.set(key[i], i)
+    if (!indexMap.has(key[i])) indexMap.set(key[i], i)
   }
 
-  const delimiter = key[v2]   // separator between encoded characters
+  const delimiter = key[v2]
+  const parts = fullString.split(delimiter)
+  parts.pop() // dropLast(1) — trailing empty segment
+
   let result = ""
-  let i = 0
-
-  while (i < fullString.length) {
-    const next = fullString.indexOf(delimiter, i)
-    if (next === -1) break
-
-    // Each digit in the encoded segment is a key-index; build a base-v2 number string
-    let digits = ""
-    for (let j = i; j < next; j++) {
-      const idx = keyMap.get(fullString[j])
-      digits += (idx !== undefined ? idx : -1).toString()
-    }
-    i = next + 1
-
-    const code = parseInt(digits, v2) - v1
-    if (isNaN(code)) break
-    result += String.fromCharCode(code)
+  for (const chunk of parts) {
+    const digits = chunk
+      .split("")
+      .map(c => {
+        const idx = indexMap.get(c)
+        return idx !== undefined ? idx.toString() : ""
+      })
+      .join("")
+    const decimal = parseInt(digits, v2)
+    if (isNaN(decimal)) continue
+    result += String.fromCharCode(decimal - v1)
   }
   return result
 }
 
-// ─── MP4 extractor (Aniyomi approach: pahe.win + "/i" → kwik download page) ─
-// AnimePahe.kt uses div#pickDownload <a> hrefs (pahe.win URLs), not data-src.
-// paheWinUrl + "/i" redirects to the kwik download page (/f/ or /d/) which
-// contains the encrypted POST form — completely different from the embed page.
-//
-// Two-step fetch mirrors Aniyomi's noRedirectClient → fetchKwikHtml pattern:
-//  1. Follow the pahe.win/i redirect to get the actual kwik download URL
-//  2. Re-fetch that URL with kwik.cx headers so the form HTML is clean
-async function extractKwikMp4Url(paheWinUrl: string, animepaheBase: string): Promise<string> {
-  // Step 1: resolve the pahe.win redirect to reach the kwik download page
-  const redirectRes = await fetch(paheWinUrl + "/i", {
-    headers: { "Referer": animepaheBase + "/" },
-  })
-  await redirectRes.text() // drain body; we only need the final URL
-  const kwikDownloadUrl = redirectRes.url
-  if (!kwikDownloadUrl || kwikDownloadUrl === paheWinUrl + "/i") {
-    throw new Error("[kwikMp4] pahe.win redirect did not resolve")
+// ─── MP4 extractor — mirrors KwikExtractor.kt + DdosGuardInterceptor ────────
+// Full flow (1:1 Aniyomi):
+//   1. WebView resolves pahe.win/xxx/i, auto-solving Cloudflare challenge
+//   2. First non-pahe.win/non-CF URL captured — kwik.cx/f/xxx download page
+//      (or direct CDN if pahe.win redirects straight there)
+//   3. Fetch kwik download page, decode eval() with kwikDecrypt
+//   4. POST _token to form action → follows 302 redirect to CDN stream URL
+async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Promise<string> {
+  // Step 1 — bypass pahe.win Cloudflare via headless WebView
+  const resolvedUrl = await resolvePaheWinUrl(paheWinUrl)
+
+  // Step 2 — if the WebView landed directly on a CDN (not kwik), return it
+  if (!resolvedUrl.includes("kwik.cx")) {
+    return resolvedUrl
   }
 
-  // Step 2: fetch the kwik download page with kwik.cx headers (matches Aniyomi fetchKwikHtml)
-  const kwikRes = await fetch(kwikDownloadUrl, {
+  // Step 3 — fetch the kwik.cx download page and decrypt the form
+  const kwikRes = await fetch(resolvedUrl, {
     headers: {
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.5",
       "Origin": "https://kwik.cx",
       "Referer": "https://kwik.cx/",
     },
   })
-  const html = await kwikRes.text()
+  if (!kwikRes.ok) throw new Error(`[kwikMp4] kwik page ${kwikRes.status}`)
 
-  // Step 3: decrypt the obfuscated form params
+  const html = await kwikRes.text()
   const pm = /\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)/.exec(html)
   if (!pm) throw new Error("[kwikMp4] decrypt params not found")
 
   const decrypted = kwikDecrypt(pm[1], pm[2], parseInt(pm[3], 10), parseInt(pm[4], 10))
   const action = /action="([^"]+)"/.exec(decrypted)?.[1]
-  const token  = /value="([^"]+)"/.exec(decrypted)?.[1]
-  if (!action || !token) throw new Error(`[kwikMp4] form parse failed: ${decrypted.substring(0, 200)}`)
+  const token = /value="([^"]+)"/.exec(decrypted)?.[1]
+  if (!action || !token) throw new Error("[kwikMp4] form parse failed")
 
-  // Step 4: POST → CDN redirect; response.url is the final signed CDN URL
+  // Step 4 — POST _token; iOS fetch follows the 302 → final CDN URL is response.url
   const postRes = await fetch(action, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Origin": "https://kwik.cx",
-      "Referer": kwikDownloadUrl,
+      "Referer": resolvedUrl,
     },
-    body: `_token=${encodeURIComponent(token)}`,
+    body: "_token=" + encodeURIComponent(token),
   })
-
   const finalUrl = postRes.url
-  if (!finalUrl || finalUrl === action) throw new Error(`[kwikMp4] no redirect (status ${postRes.status})`)
+  if (!finalUrl || finalUrl === action) {
+    throw new Error(`[kwikMp4] POST redirect failed (${postRes.status})`)
+  }
   return finalUrl
 }
 

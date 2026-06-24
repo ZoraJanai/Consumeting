@@ -932,3 +932,60 @@ export async function refreshAnimepaheSession(): Promise<boolean> {
   clearStoredSession()
   return bootstrapAnimepaheSession()
 }
+
+/**
+ * Resolves a pahe.win URL through a headless WebViewController that auto-solves
+ * the Cloudflare JS challenge — mirrors DdosGuardInterceptor + CloudflareBypass.kt.
+ *
+ * Flow (matches Aniyomi's getStreamUrlFromKwik):
+ *   1. Load `paheWinUrl + "/i"` in a background WebView
+ *   2. WebView executes Cloudflare JS, obtains cf_clearance
+ *   3. Cloudflare redirects → pahe.win redirects → kwik download page (or CDN)
+ *   4. shouldAllowRequest fires for every navigation; we intercept the first
+ *      non-pahe.win / non-Cloudflare URL and return it as the resolved URL
+ *
+ * The caller can then either use the URL directly (CDN stream) or fetch it
+ * natively to do the kwik form POST (kwikDecrypt → _token → CDN).
+ */
+export function resolvePaheWinUrl(paheWinUrl: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const targetUrl = paheWinUrl + "/i"
+    let settled = false
+
+    const controller = new WebViewController()
+
+    const settle = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { controller.loadURL("about:blank") } catch { /* ignore */ }
+      fn()
+    }
+
+    const timer = setTimeout(() => {
+      settle(() => reject(new Error("[paheWin] CF bypass timed out")))
+    }, 25000)
+
+    // shouldAllowRequest fires for each main-frame navigation.
+    // Allow pahe.win + Cloudflare through; capture the first external URL.
+    controller.shouldAllowRequest = async function (request: any) {
+      const url: string = request?.url || ""
+      if (!url || !url.startsWith("https://")) return true
+
+      const isOwn =
+        url.includes("pahe.win") ||
+        url.includes("cloudflare") ||
+        url.includes("ddos-guard")
+
+      if (!isOwn) {
+        settle(() => resolve(url))
+        return false // block the WebView navigation — we have the URL
+      }
+      return true
+    }
+
+    controller.loadURL(targetUrl).catch((err: any) => {
+      settle(() => reject(new Error("[paheWin] loadURL failed: " + String(err))))
+    })
+  })
+}

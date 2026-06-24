@@ -1,5 +1,11 @@
 import { fetch } from "scripting"
-import { paheFetchAllEpisodes, paheFetchAnimeMainPageById, paheSearch } from "./animepaheClient"
+import {
+  paheFetchAllEpisodes,
+  paheFetchAnimeDetails,
+  paheFetchAnimeDetailsBySession,
+  paheFetchAnimeMainPageById,
+  paheSearch,
+} from "./animepaheClient"
 import { normalizePaheUrl } from "./animepaheSession"
 
 // Type definitions
@@ -23,6 +29,11 @@ interface BaseInfo {
   id: string
   episode: string
   name: string
+  // Enriched from AnimePahe details page (mirrors Aniyomi animeDetailsParse)
+  description?: string
+  genres?: string
+  status?: string
+  studios?: string
 }
 
 // ===== ANIMEPAHE API =====
@@ -393,35 +404,58 @@ const getInfoAnilist = async (anime: Anime): Promise<BaseInfo> => {
   }
 }
 
-// Get anime info from Animepahe
+// Get anime info from Animepahe (mirrors Aniyomi: animeDetailsParse + episodeListParse)
 const getInfoAnimepahe = async (anime: Anime): Promise<BaseInfo> => {
   try {
-    const search = await searchAnimepahe(anime.name);
-    let match: Anime | undefined;
+    const search = await searchAnimepahe(anime.name)
+    let match: Anime | undefined
     if (Array.isArray(search)) {
-      match = search.find(obj => obj.name === anime.name) ?? search[0];
+      match = search.find(obj => obj.name === anime.name) ?? search[0]
     } else {
-      console.error('[getInfoAnimepahe] search failed:', search);
-      throw new Error("Search failed: " + search);
+      console.error('[getInfoAnimepahe] search failed:', search)
+      throw new Error("Search failed: " + search)
     }
     if (!match) {
-      console.error('[getInfoAnimepahe] no results for:', anime.name);
-      throw new Error("No results found");
+      console.error('[getInfoAnimepahe] no results for:', anime.name)
+      throw new Error("No results found")
     }
 
-    const animepaheInfo = await fetchAnimepaheInfo(match.source);
-    const ids = animepaheInfo.episodes.map((ep: any) => ep.id as string);
+    const session = match.source
+    const paheId = match.paheID
+
+    // Fetch episodes + full anime details in parallel (1:1 Aniyomi efficiency)
+    const [animepaheInfo, details] = await Promise.all([
+      fetchAnimepaheInfo(session),
+      (async () => {
+        try {
+          if (paheId) return await paheFetchAnimeDetails(paheId)
+          return await paheFetchAnimeDetailsBySession(session)
+        } catch {
+          return null
+        }
+      })(),
+    ])
+
+    const ids = animepaheInfo.episodes.map((ep: any) => ep.id as string)
+
+    // Use full-res thumbnail from details page if available, else keep the search poster
+    const img = details?.thumbnail || anime.img
+
     return {
       total: String(ids.length),
       ids,
       name: match.name,
       id: animepaheInfo.id,
       episode: "none",
-      img: anime.img
-    };
+      img,
+      description: details?.description,
+      genres: details?.genres,
+      status: details?.status,
+      studios: details?.studios,
+    }
   } catch (error) {
-    console.error('[getInfoAnimepahe] ERROR:', error);
-    throw error;
+    console.error('[getInfoAnimepahe] ERROR:', error)
+    throw error
   }
 }
 
@@ -430,5 +464,5 @@ export {
   getInfoAnilist,
   searchAnimepahe,
   getInfoAnimepahe,
-  type BaseInfo
+  type BaseInfo,
 }

@@ -277,4 +277,115 @@ function mergeResponseCookies(response: any) {
   }
 }
 
+// ─── Anime Details — mirrors AnimePahe.kt#animeDetailsParse ──────────────────
+
+export interface AnimeDetails {
+  session: string
+  title: string
+  thumbnail: string
+  status: string
+  studios: string
+  genres: string
+  description: string
+}
+
+/** Extract the session ID embedded in the anime page HTML. */
+function extractSessionFromHtml(html: string): string {
+  // API call pattern: ?m=release&id={session} (most reliable)
+  const m1 = /m=release&(?:amp;)?id=([\w-]+)/.exec(html)
+  if (m1) return m1[1]
+  // Fallback: /anime/{session} href (breadcrumb / canonical)
+  const m2 = /href="\/anime\/([\w-]+)"/.exec(html)
+  if (m2) return m2[1]
+  return ""
+}
+
+/** Parse anime details from a /a/{id} or /anime/{session} HTML page. */
+function parseAnimeDetailsHtml(html: string, fallbackSession = ""): AnimeDetails {
+  const session = extractSessionFromHtml(html) || fallbackSession
+
+  // Title: div.title-wrapper > h1 > span (Aniyomi: selectFirst("div.title-wrapper > h1 > span"))
+  const titleM = /class="title-wrapper"[\s\S]*?<h1[^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i.exec(html)
+  const title = titleM ? titleM[1].replace(/<[^>]+>/g, "").trim() : ""
+
+  // Thumbnail: div.anime-poster a href (full-res poster)
+  const thumbM = /class="anime-poster"[\s\S]*?<a[^>]+href="([^"]+)"/i.exec(html)
+  const thumbnail = thumbM ? normalizePaheUrl(thumbM[1]) : ""
+
+  // Status: p:contains(Status:) a
+  const statusM = /Status:[\s\S]{0,200}?<a[^>]*>([^<]+)<\/a>/i.exec(html)
+  const statusRaw = statusM ? statusM[1].trim() : ""
+  const statusLower = statusRaw.toLowerCase()
+  const status = statusLower.includes("airing") && !statusLower.includes("finish")
+    ? "Currently Airing"
+    : statusLower.includes("finish") || statusLower.includes("complet")
+    ? "Finished Airing"
+    : statusRaw || "Unknown"
+
+  // Studios: p:contains(Studios:) a
+  const studioM = /Studios:[\s\S]{0,200}?<a[^>]*>([^<]+)<\/a>/i.exec(html)
+  const studios = studioM ? studioM[1].trim() : ""
+
+  // Genres: div.anime-genre ul li a  +  Demographic / Theme a tags
+  const genreItems: string[] = []
+  const genreSectionM = /class="anime-genre"[\s\S]*?<\/ul>/i.exec(html)
+  if (genreSectionM) {
+    const liRe = /<a[^>]*>([^<]+)<\/a>/g
+    let gm
+    while ((gm = liRe.exec(genreSectionM[0])) !== null) genreItems.push(gm[1].trim())
+  }
+  for (const label of ["Demographic", "Theme"]) {
+    const re = new RegExp(label + ":[\\s\\S]{0,200}?<a[^>]*>([^<]+)<\\/a>", "i")
+    const lm = re.exec(html)
+    if (lm) genreItems.push(lm[1].trim())
+  }
+  const genres = [...new Set(genreItems)].join(", ")
+
+  // Description: div.anime-summary  (mirrors Aniyomi: select("div.anime-summary").text())
+  const summaryM = /class="anime-summary"[^>]*>([\s\S]*?)<\/div>/i.exec(html)
+  const descBase = summaryM
+    ? summaryM[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+    : ""
+
+  // Supplementary fields (Aniyomi appends Synonyms, Japanese, Aired, Season)
+  const extras: string[] = []
+  for (const label of ["Synonyms", "Japanese", "Aired", "Season"]) {
+    const re = new RegExp("<p[^>]*>[^<]*" + label + ":[^<]*<\\/p>", "i")
+    const lm = re.exec(html)
+    if (lm) {
+      const val = lm[0].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+      if (val) extras.push(val)
+    }
+  }
+  const description = extras.length > 0 ? descBase + "\n\n" + extras.join("\n\n") : descBase
+
+  return { session, title, thumbnail, status, studios, genres, description }
+}
+
+/**
+ * Fetch full anime details by numeric paheID.
+ * Mirrors Aniyomi's animeDetailsRequest + animeDetailsParse.
+ * GET /a/{paheId} → redirects to /anime/{session} → parse HTML.
+ */
+export async function paheFetchAnimeDetails(paheId: string | number): Promise<AnimeDetails> {
+  const html = await paheFetchAnimeMainPageById(paheId)
+  return parseAnimeDetailsHtml(html)
+}
+
+/**
+ * Fetch full anime details by session slug (when numeric ID is unavailable).
+ * GET /anime/{session} → parse HTML.
+ */
+export async function paheFetchAnimeDetailsBySession(session: string): Promise<AnimeDetails> {
+  const baseUrl = getBaseUrl()
+  const url = baseUrl + "/anime/" + session
+  const html = await directFetch(
+    url,
+    paheHeaders({ referer: baseUrl + "/", mode: "navigate", requestUrl: url }),
+    false,
+    false
+  )
+  return parseAnimeDetailsHtml(html, session)
+}
+
 export { bootstrapAnimepaheSession, ensureAnimepaheSession, normalizePaheUrl }
