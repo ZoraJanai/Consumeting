@@ -196,7 +196,8 @@ export async function getAnidapSources(
   const settled = new Array<boolean>(total2).fill(false)
   const results = new Array<QualityMap | null>(total2).fill(null)
 
-  const winnerMap = await new Promise<QualityMap | null>((resolve) => {
+  type Stage2Result = { map: QualityMap; providerId: string } | null
+  const winnerResult = await new Promise<Stage2Result>((resolve) => {
     let resolved = false
 
     function tryResolve() {
@@ -205,7 +206,7 @@ export async function getAnidapSources(
         if (!settled[i]) return          // higher-priority slot still pending
         if (results[i] !== null) {       // first settled non-null wins
           resolved = true
-          resolve(results[i])
+          resolve({ map: results[i]!, providerId: fallbacks[i] })
           return
         }
       }
@@ -238,8 +239,17 @@ export async function getAnidapSources(
 
   clearProviderBar()
 
-  if (!winnerMap) throw new Error(`[anidap] no working sub provider found for ep ${ep}`)
-  return winnerMap
+  if (!winnerResult) throw new Error(`[anidap] no working sub provider found for ep ${ep}`)
+
+  // Bubble winner to position 1 (right after the stage-1 slot) so next time
+  // it's tried first in stage 1 before going parallel.
+  const winner = winnerResult.providerId
+  console.log("[getAnidapSources] bubbling winner to slot 1:", winner)
+  const next = providerOrder.filter(id => id !== winner)
+  next.splice(1, 0, winner)
+  saveSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, next)
+
+  return winnerResult.map
 }
 
 // ---- 2. Pick First Match From Quality Order ----
