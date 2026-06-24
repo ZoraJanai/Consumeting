@@ -457,51 +457,55 @@ export async function downloadEpisode(
   onStart?.(total)
 
   const links: string[] = [`mkdir ${entry.name.replaceAll(" ", "\\ ")}`]
+  const isAnidap = ids[0]?.startsWith("anidap:")
 
   // if we prompt, only ask once and reuse the same tag for whole batch
   let chosenTag: string | null = null
 
   for (let i = 0; i < total; i++) {
-    const sources = await getAnimepaheSources(ids[i])   // tag -> url
-    const tags = Object.keys(sources)
+    const number = Number(entry.episode) + i
+    const name = entry.name.replaceAll(" ", "\\ ")
 
-    let url = qualityAutoSelect(sources, order)
+    if (isAnidap) {
+      // Anidap: fetch sources (auto provider, no ask), pick best quality, ffmpeg direct
+      const sources = await getAnidapSources(ids[i])   // no askProvider → always auto
+      const anidapOrder = loadSetting(STORAGE_KEYS.ANIDAP_QUALITY_ORDER, AnidapQualityOrder)
+      const tags = Object.keys(sources)
+      const url = qualityAutoSelect(sources, anidapOrder) ?? sources[tags[0]]
+      const link = `ffmpeg -i "${String(url)}" -c copy ~/Documents/${name}/${name}\\ -\\ ${number}.mp4`
+      links.push(link)
+    } else {
+      // Animepahe: fetch sources, pick quality, extract HLS via kwik
+      const sources = await getAnimepaheSources(ids[i])
+      const tags = Object.keys(sources)
 
-    if (!url) {
-      if (autoQuality) {
-        // try previously chosen tag if already asked this batch
-        if (chosenTag) {
-          url = sources[chosenTag]
-        }
+      let url = qualityAutoSelect(sources, order)
 
-        if (!url) {
+      if (!url) {
+        if (autoQuality) {
+          if (chosenTag) {
+            url = sources[chosenTag]
+          }
+          if (!url) {
+            if (!askQuality) throw new Error("askQuality callback not provided")
+            chosenTag = await askQuality(tags)
+            const filtered = order.filter(q => q !== chosenTag)
+            const newOrder = [...filtered.slice(0, 2), chosenTag, ...filtered.slice(2)]
+            saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
+            order = newOrder
+            url = sources[chosenTag]
+          }
+        } else {
           if (!askQuality) throw new Error("askQuality callback not provided")
           chosenTag = await askQuality(tags)
-
-          // insert chosenTag at 3rd position in order
-          const filtered = order.filter(q => q !== chosenTag)
-          const newOrder = [
-            ...filtered.slice(0, 2),
-            chosenTag,
-            ...filtered.slice(2),
-          ]
-          saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
-          order = newOrder
-
           url = sources[chosenTag]
         }
-      } else {
-        // manual mode fallback
-        if (!askQuality) throw new Error("askQuality callback not provided")
-        chosenTag = await askQuality(tags)
-        url = sources[chosenTag]
       }
-    }
 
-    const hls = await kwikExtractor(String(url))
-    const number = Number(entry.episode) + i
-    const link = `ffmpeg -i "${hls}" -c copy ~/Documents/${entry.name.replaceAll(" ","\\ ")}/${entry.name.replaceAll(" ","\\ ")}\\ -\\ ${number}.mp4`
-    links.push(link)
+      const hls = await kwikExtractor(String(url))
+      const link = `ffmpeg -i "${hls}" -c copy ~/Documents/${name}/${name}\\ -\\ ${number}.mp4`
+      links.push(link)
+    }
 
     onProgress?.(i + 1, total)
   }
