@@ -183,6 +183,60 @@ export interface AnidapQualityVariant {
 }
 
 // ─────────────────────────────────────────────
+// RSC slug extractor — multiple strategies
+// ─────────────────────────────────────────────
+
+function _extractSlugFromRSC(text: string): string | null {
+  // Strategy 1: explicit "anidap:slug" string anywhere in raw text (old format)
+  const direct = /"anidap:([a-z0-9][a-z0-9-]+)"/.exec(text)
+  if (direct) return direct[1]
+
+  // Parse the RSC flight array
+  let arr: any[]
+  try { arr = JSON.parse(text) } catch { return null }
+
+  // Strategy 2: resolve references
+  // RSC format: {"_N": M} means property-name = arr[N], value = arr[M]
+  // Walk the array for known key names (requestedId, slug, animeId, id)
+  // and return the string value they point to
+  const KEY_NAMES = new Set(["requestedId", "animeId", "slug"])
+  const keyIndices = new Map<number, string>() // arrayIndex → keyName
+  for (let i = 0; i < arr.length; i++) {
+    if (typeof arr[i] === "string" && KEY_NAMES.has(arr[i])) {
+      keyIndices.set(i, arr[i])
+    }
+  }
+
+  for (const obj of arr) {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) continue
+    for (const [k, v] of Object.entries(obj)) {
+      const keyIdx = parseInt(k.replace("_", ""), 10)
+      if (isNaN(keyIdx) || !keyIndices.has(keyIdx)) continue
+      const valIdx = v as number
+      if (valIdx < 0 || valIdx >= arr.length) continue // Suspense pending
+      const val = arr[valIdx]
+      if (typeof val !== "string") continue
+      const clean = val.replace(/^anidap:/, "")
+      if (/^[a-z][a-z0-9-]{5,}$/.test(clean)) return clean
+    }
+  }
+
+  // Strategy 3: find any string that looks like an Anidap slug
+  // (all-lowercase + hyphens + digits, 3+ hyphens, 12+ chars)
+  for (const item of arr) {
+    if (typeof item !== "string") continue
+    const clean = item.replace(/^anidap:/, "")
+    if (
+      /^[a-z][a-z0-9-]{11,}$/.test(clean) &&
+      (clean.match(/-/g) ?? []).length >= 3 &&
+      !clean.includes("--")
+    ) return clean
+  }
+
+  return null
+}
+
+// ─────────────────────────────────────────────
 // API: resolve AniList ID → slug + metadata
 // ─────────────────────────────────────────────
 
@@ -205,13 +259,8 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
   const text = await res.text()
   console.log("[anidap] info raw response:", text.substring(0, 500))
 
-  // The RSC payload is a streaming reference-graph array. The actual animeData
-  // is behind a Suspense boundary (negative index = pending), but requestedId
-  // always resolves and contains the slug as "anidap:<slug>".
-  const slugMatch = /"anidap:([a-z0-9][a-z0-9-]+)"/.exec(text)
-  if (!slugMatch) throw new Error(`[anidap] could not extract slug from response: ${text.substring(0, 300)}`)
-
-  const slug = slugMatch[1]
+  const slug = _extractSlugFromRSC(text)
+  if (!slug) throw new Error(`[anidap] could not extract slug from response: ${text.substring(0, 300)}`)
   console.log("[anidap] extracted slug:", slug)
 
   const { title, image } = await anidapFetchInfo(slug)
