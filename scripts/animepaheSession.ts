@@ -71,7 +71,10 @@ function interceptPaheWinRedirect(url: string, request?: any): boolean {
   const isOwn =
     url.includes("pahe.win") ||
     url.includes("cloudflare") ||
-    url.includes("ddos-guard")
+    url.includes("ddos-guard") ||
+    // Let the kwik.cx form POST go through — we want the 302 redirect that
+    // follows (the real CDN URL), not the POST action URL itself.
+    (url.includes("kwik.cx") && navType === "formSubmitted")
   if (isOwn) {
     console.log("[paheWin] shouldAllow → pass-through [" + navType + "]:", url.slice(0, 80))
     return false
