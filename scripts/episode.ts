@@ -424,8 +424,8 @@ export async function downloadEpisode(
     }
 
     const number = Number(entry.episode) + i
-    const link = `ffmpeg -allowed_segment_extensions ALL -allowed_extensions ALL -extension_picky 0 -headers "Origin: https://kwik.cx" -referer "https://kwik.cx/" -user_agent "Mozilla/5.0" -i "${url}" -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`
-    links.push(link)
+    links.push(`python3 hls_fix.py "${url}"`)
+    links.push(`ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy "~/Documents/${safeName}/${safeName} - ${number}.mp4"`)
 
     onProgress?.(i + 1, total)
   }
