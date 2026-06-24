@@ -45,6 +45,9 @@ let verificationController: any = null
 // Set by waitForPaheWinCapture(); fired from shouldAllowRequest when a
 // non-pahe.win / non-CF URL is seen (kwik download URL or CDN stream URL).
 let _paheWinCaptureCallback: ((url: string) => void) | null = null
+// When false, shouldAllowRequest lets the iframe continue navigating so the
+// target page can load and solve its own CF challenge (e.g. kwik.cx).
+let _paheWinCaptureShouldBlock = true
 
 function interceptPaheWinRedirect(url: string, request?: any): boolean {
   if (!_paheWinCaptureCallback) return false
@@ -78,11 +81,13 @@ function interceptPaheWinRedirect(url: string, request?: any): boolean {
     console.log("[paheWin] unwrapped embedded kwik URL →", resolvedUrl)
   }
 
-  console.log("[paheWin] shouldAllow → CAPTURED [" + navType + "]:", resolvedUrl.slice(0, 120))
+  const shouldBlock = _paheWinCaptureShouldBlock
+  console.log("[paheWin] shouldAllow → CAPTURED [" + navType + "] block=" + shouldBlock + ":", resolvedUrl.slice(0, 120))
   const cb = _paheWinCaptureCallback
   _paheWinCaptureCallback = null
   cb(resolvedUrl)
-  return true
+  // true = block navigation; false = allow iframe to keep loading (for CF solve)
+  return shouldBlock
 }
 const WEBVIEW_FETCH_TIMEOUT_MS = 90000
 const fetchTimeouts: Record<number, ReturnType<typeof setTimeout>> = {}
@@ -1005,14 +1010,24 @@ export async function refreshAnimepaheSession(): Promise<boolean> {
  * non-Cloudflare) URL seen by shouldAllowRequest while a capture is armed.
  * Call this BEFORE injecting the iframe so the callback is ready.
  */
-export function waitForPaheWinCapture(timeoutMs = 22000): Promise<string> {
-  // Cancel any stale capture from a previous call
+/**
+ * Arm the shouldAllowRequest hook to capture the first non-pahe.win/non-CF
+ * navigation URL seen by the existing WebView (from an injected iframe).
+ *
+ * @param blockOnCapture  true  = block the iframe navigation (default, used when
+ *                               we only need the URL, e.g. CDN stream URL).
+ *                        false = let the iframe continue loading so it can solve
+ *                               CF challenges (e.g. kwik.cx download page).
+ */
+export function waitForPaheWinCapture(timeoutMs = 22000, blockOnCapture = true): Promise<string> {
+  // Cancel any stale capture
   _paheWinCaptureCallback = null
-  console.log("[paheWin] capture armed (timeout", timeoutMs + "ms)")
+  _paheWinCaptureShouldBlock = blockOnCapture
+  console.log("[paheWin] capture armed (timeout " + timeoutMs + "ms, block=" + blockOnCapture + ")")
   return new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
       _paheWinCaptureCallback = null
-      console.log("[paheWin] capture timed out after", timeoutMs + "ms")
+      console.log("[paheWin] capture timed out after " + timeoutMs + "ms")
       reject(new Error("[paheWin] redirect capture timed out"))
     }, timeoutMs)
     _paheWinCaptureCallback = (url: string) => {
@@ -1021,6 +1036,58 @@ export function waitForPaheWinCapture(timeoutMs = 22000): Promise<string> {
       resolve(url)
     }
   })
+}
+
+/**
+ * Poll the live WebView's cookie jar until kwik.cx has a `cf_clearance` cookie,
+ * then return all kwik.cx cookies + the WebView's User-Agent.
+ *
+ * Mirrors Aniyomi's CloudflareBypass.pollForClearance().
+ * Called after webViewNavigateFrame navigates to kwik.cx/f/xxx (with CF bypass
+ * happening inside the live WebView's iframe).
+ */
+export async function webViewWaitForKwikClearance(
+  timeoutMs: number
+): Promise<{ cookies: string; userAgent: string }> {
+  if (!webViewController) throw new Error("[kwikCF] no active WebView session")
+  if (typeof webViewController.getAllCookies !== "function") {
+    throw new Error("[kwikCF] getAllCookies unavailable")
+  }
+
+  const deadline = Date.now() + timeoutMs
+  console.log("[kwikCF] polling for kwik.cx cf_clearance cookie")
+
+  while (Date.now() < deadline) {
+    await new Promise<void>(r => setTimeout(r, 800))
+    try {
+      const all: any[] = (await webViewController.getAllCookies()) || []
+      const kwik = all.filter((c: any) => {
+        const d = ((c.domain as string) || "").replace(/^\./, "").toLowerCase()
+        return d === "kwik.cx" || d.endsWith(".kwik.cx")
+      })
+      const hasCf = kwik.some((c: any) => c.name === "cf_clearance")
+      if (!hasCf) {
+        console.log("[kwikCF] no cf_clearance yet, kwik cookie count:", kwik.length)
+        continue
+      }
+      const cookieHeader = kwik
+        .filter((c: any) => c.name && c.value)
+        .map((c: any) => (c.name as string) + "=" + (c.value as string))
+        .join("; ")
+      let userAgent = ""
+      try {
+        const ua = await enqueueWebViewScript(webViewController, "return navigator.userAgent")
+        userAgent = String(ua || "")
+      } catch { /* ignore */ }
+      console.log("[kwikCF] cf_clearance obtained, cookies len:", cookieHeader.length, "UA:", userAgent.slice(0, 80))
+      return { cookies: cookieHeader, userAgent }
+    } catch (e) {
+      console.log("[kwikCF] poll error:", String(e))
+    }
+  }
+
+  console.log("[kwikCF] timed out — will attempt native fetch without CF cookies")
+  throw new Error("[kwikCF] timed out waiting for kwik.cx cf_clearance")
 }
 
 /**

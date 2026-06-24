@@ -16,6 +16,7 @@ import {
   waitForPaheWinCapture,
   webViewNavigateFrame,
   webViewSubmitForm,
+  webViewWaitForKwikClearance,
 } from "./animepaheSession"
 
 // ---- Types ----
@@ -165,28 +166,46 @@ async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Pr
   const FRAME = "__kwik_resolve__"
   console.log("[kwikMp4] step1 start — paheWinUrl:", paheWinUrl)
 
-  // Step 1 — arm capture, inject iframe for pahe.win/i → CF bypass → kwik URL
-  const capture1 = waitForPaheWinCapture(22000)
+  // Step 1 — capture kwik URL from pahe.win redirect.
+  // blockOnCapture = FALSE so the iframe keeps navigating to kwik.cx, which
+  // lets the WebView auto-solve kwik's CF challenge (mirrors fetchKwikHtml).
+  const capture1 = waitForPaheWinCapture(22000, false)
   await webViewNavigateFrame(paheWinUrl + "/i", FRAME)
   const kwikUrl = await capture1
   console.log("[kwikMp4] step1 done — kwikUrl:", kwikUrl.slice(0, 120))
 
-  // Step 2 — if pahe.win redirected straight to CDN (skipped kwik), return it
+  // Step 1b — direct CDN URL (pahe.win skipped kwik entirely), return immediately
   if (!kwikUrl.includes("kwik.cx")) {
-    console.log("[kwikMp4] step2 direct CDN URL — done")
+    console.log("[kwikMp4] step1b direct CDN URL — done")
     return kwikUrl
   }
 
-  // Step 3 — native fetch the kwik download page (HTML, not binary — safe)
-  console.log("[kwikMp4] step3 fetching kwik page")
-  const kwikRes = await fetch(kwikUrl, {
-    headers: {
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.5",
-      "Origin": "https://kwik.cx",
-      "Referer": "https://kwik.cx/",
-    },
-  })
+  // Step 2 — poll WebView cookie jar until kwik.cx cf_clearance appears.
+  // The iframe is navigating to kwik.cx/f/xxx; WebView solves the CF challenge
+  // there and stores the cookie. Mirrors Aniyomi fetchKwikHtml CF bypass path.
+  console.log("[kwikMp4] step2 waiting for kwik.cx CF clearance")
+  let kwikCookies = ""
+  let kwikUA = ""
+  try {
+    const cf = await webViewWaitForKwikClearance(20000)
+    kwikCookies = cf.cookies
+    kwikUA = cf.userAgent
+  } catch (e) {
+    console.log("[kwikMp4] step2 CF wait failed:", String(e), "— trying without CF cookies")
+  }
+
+  // Step 3 — native fetch with CF cookies + matching User-Agent
+  console.log("[kwikMp4] step3 fetching kwik page (cookies len:", kwikCookies.length + ")")
+  const kwikHeaders: Record<string, string> = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Origin": "https://kwik.cx",
+    "Referer": "https://kwik.cx/",
+  }
+  if (kwikCookies) kwikHeaders["Cookie"] = kwikCookies
+  if (kwikUA) kwikHeaders["User-Agent"] = kwikUA
+
+  const kwikRes = await fetch(kwikUrl, { headers: kwikHeaders })
   console.log("[kwikMp4] step3 kwik response:", kwikRes.status, kwikRes.url.slice(0, 80))
   if (!kwikRes.ok) throw new Error(`[kwikMp4] kwik page ${kwikRes.status}`)
   const html = await kwikRes.text()
@@ -204,9 +223,10 @@ async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Pr
   console.log("[kwikMp4] step4 decrypted — action:", action?.slice(0, 80), "token len:", token?.length)
   if (!action || !token) throw new Error("[kwikMp4] form parse failed")
 
-  // Step 5 — arm capture, POST _token via iframe form → capture 302 → CDN URL
+  // Step 5 — POST _token via iframe, capture 302 → CDN URL
+  // blockOnCapture = TRUE (default) — we block to prevent loading binary CDN data
   console.log("[kwikMp4] step5 submitting form")
-  const capture2 = waitForPaheWinCapture(12000)
+  const capture2 = waitForPaheWinCapture(12000, true)
   await webViewSubmitForm(action, token, FRAME)
   const cdnUrl = await capture2
   console.log("[kwikMp4] step5 done — CDN URL:", cdnUrl.slice(0, 120))
