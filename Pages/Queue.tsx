@@ -154,7 +154,8 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
 
   // 🔔 update badge count whenever items change
   useEffect(() => {
-    const totalLinks = items.reduce((sum, q) => sum + (q.links?.length - 1 ?? 0), 0)
+    // links = [mkdir, python3, ffmpeg, python3, ffmpeg, ...] → (length - 1) / 2 episodes
+    const totalLinks = items.reduce((sum, q) => sum + Math.floor((q.links?.length - 1 ?? 0) / 2), 0)
     onBadgeChange?.(totalLinks)
   }, [items, onBadgeChange])
 
