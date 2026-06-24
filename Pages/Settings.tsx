@@ -12,7 +12,7 @@ const QualitiesOrder = [
   "-default", "-auto", "-480p", "-360p"
 ]
 
-export const AnidapProviderOrder = ["uwu", "mimi", "mochi", "beep"]
+export const AnidapProviderOrder = ["miku", "uwu", "mimi", "mochi", "beep"]
 export const AnidapQualityOrder = ["-1080p", "-720p", "-480p", "-360p", "-auto"]
 
 // Storage keys

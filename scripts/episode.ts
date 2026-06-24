@@ -3,7 +3,7 @@
 
 import { fetch, useState } from "scripting"
 import { loadSetting, saveSetting } from "../Pages/Settings"
-import { hideOverlay, showOverlay } from "../Pages/Loading"
+import { hideOverlay, showOverlay, setProviderBar, clearProviderBar } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
@@ -158,28 +158,88 @@ export async function getAnidapSources(
     providersToTry = ordered
   }
 
-  // ── 4. Try providers until one returns valid quality variants ──────────────
-  for (const providerId of providersToTry) {
+  // ── 4. Two-stage fetch ────────────────────────────────────────────────────
+  // Stage 1: silently try the first (highest-priority) provider alone
+  // Stage 2: only if stage 1 fails → parallel-race the rest with the bar
+
+  function buildMap(variants: { label: string; url: string }[]): QualityMap {
+    const map: QualityMap = {}
+    for (const v of variants) map[`-${v.label}`] = v.url
+    if (!map["-auto"]) map["-auto"] = variants[0].url
+    return map
+  }
+
+  // ── Stage 1: try first provider, no UI ────────────────────────────────────
+  if (providersToTry.length > 0) {
+    const first = providersToTry[0]
+    console.log("[getAnidapSources] stage1 trying:", first)
     try {
-      // Returns variants directly (handles master m3u8 parsing + headers check internally)
-      const variants = await anidapFetchSourcesByProvider(slug, ep, providerId)
-      if (!variants || !variants.length) {
-        console.log("[getAnidapSources] no variants from provider:", providerId)
-        continue
+      const variants = await anidapFetchSourcesByProvider(slug, ep, first)
+      if (variants && variants.length) {
+        console.log("[getAnidapSources] stage1 hit:", first, variants.map(v => v.label).join(", "))
+        return buildMap(variants)
       }
-      console.log("[getAnidapSources] provider", providerId, "qualities:", variants.map(v => v.label).join(", "))
-
-      const map: QualityMap = {}
-      for (const v of variants) map[`-${v.label}`] = v.url
-      if (!map["-auto"]) map["-auto"] = variants[0].url  // always have a fallback
-
-      return map
+      console.log("[getAnidapSources] stage1 miss:", first)
     } catch (err) {
-      console.log("[getAnidapSources] provider", providerId, "error:", String(err))
+      console.log("[getAnidapSources] stage1 error:", first, String(err))
     }
   }
 
-  throw new Error(`[anidap] no working sub provider found for ep ${ep}`)
+  // ── Stage 2: parallel-race the remaining providers with progress bar ───────
+  const fallbacks = providersToTry.slice(1)
+  if (!fallbacks.length) throw new Error(`[anidap] no working sub provider found for ep ${ep}`)
+
+  const total2 = fallbacks.length
+  setProviderBar(0, total2, "Trying fallback providers…")
+
+  let completedCount = 0
+  const settled = new Array<boolean>(total2).fill(false)
+  const results = new Array<QualityMap | null>(total2).fill(null)
+
+  const winnerMap = await new Promise<QualityMap | null>((resolve) => {
+    let resolved = false
+
+    function tryResolve() {
+      if (resolved) return
+      for (let i = 0; i < total2; i++) {
+        if (!settled[i]) return          // higher-priority slot still pending
+        if (results[i] !== null) {       // first settled non-null wins
+          resolved = true
+          resolve(results[i])
+          return
+        }
+      }
+      resolved = true
+      resolve(null) // all settled as null
+    }
+
+    fallbacks.forEach((providerId, i) => {
+      anidapFetchSourcesByProvider(slug, ep, providerId)
+        .then(variants => {
+          if (variants && variants.length) {
+            results[i] = buildMap(variants)
+            console.log("[getAnidapSources] stage2", providerId, "qualities:", variants.map(v => v.label).join(", "))
+            setProviderBar(++completedCount, total2, `${providerId} ✓`)
+          } else {
+            console.log("[getAnidapSources] stage2 miss:", providerId)
+            setProviderBar(++completedCount, total2, `${providerId} ✗`)
+          }
+        })
+        .catch(err => {
+          console.log("[getAnidapSources] stage2 error:", providerId, String(err))
+          setProviderBar(++completedCount, total2, `${providerId} ✗`)
+        })
+        .finally(() => {
+          settled[i] = true
+          tryResolve()
+        })
+    })
+  })
+
+  clearProviderBar()
+
+  if (!winnerMap) throw new Error(`[anidap] no working sub provider found for ep ${ep}`)
+  return winnerMap
 }
 
 // ---- 2. Pick First Match From Quality Order ----
