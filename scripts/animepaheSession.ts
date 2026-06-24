@@ -1143,40 +1143,76 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
 }
 
 /**
- * Navigate the background WebView to a kwik.cx download page, read its HTML
- * via evaluateJavaScript, then navigate back to animepahe.pw.
+ * Navigate the background WebView to a kwik.cx download page and return its
+ * HTML. The WebView is LEFT on the kwik.cx page — caller must call
+ * submitKwikFormAndCapture() next to POST the form and navigate back.
  *
- * Native fetch() (URLSession) is rejected by Cloudflare because its TLS JA3
- * fingerprint differs from WKWebView's — even with a valid cf_clearance cookie.
- * Reading the page through the WebView avoids this mismatch entirely.
+ * Keeping the WebView on kwik.cx between reading and submitting means the
+ * form POST has the correct Origin/Referer (kwik.cx) so kwik accepts it.
  */
-export async function captureKwikPageHtml(kwikUrl: string): Promise<string> {
+export async function openKwikPage(kwikUrl: string): Promise<string> {
   if (!webViewController) throw new Error("[kwikCF] no active WebView session")
   await waitForKwikCaptureFree()
   _kwikCapturing = true
-  const baseUrl = getBaseUrl()
+
+  console.log("[kwikCF] WebView navigating to kwik download page:", kwikUrl.slice(0, 80))
+  try { await webViewController.loadURL(kwikUrl) } catch { /* ignore */ }
+
+  // Poll until the packed eval(function( block appears in the DOM
+  const deadline = Date.now() + 10000
   let html = ""
+  while (Date.now() < deadline) {
+    await new Promise<void>(r => setTimeout(r, 600))
+    try {
+      const h = String(
+        (await enqueueWebViewScript(webViewController, "return document.documentElement.outerHTML")) || ""
+      )
+      if (h.includes("eval(function(")) {
+        html = h
+        console.log("[kwikCF] kwik page loaded, html length:", html.length)
+        break
+      }
+      console.log("[kwikCF] waiting for kwik eval block, html len so far:", h.length)
+    } catch { /* page still loading */ }
+  }
 
+  // NOTE: _kwikCapturing stays true — WebView stays on kwik.cx
+  return html
+}
+
+/**
+ * Submit the kwik.cx download form from within the currently loaded kwik.cx
+ * page, capture the CDN redirect URL via shouldAllowRequest, then navigate
+ * back to animepahe.pw.
+ *
+ * Must be called directly after openKwikPage() while the WebView is still on
+ * kwik.cx, so the POST has the correct Referer and Origin headers.
+ */
+export async function submitKwikFormAndCapture(action: string, token: string): Promise<string> {
+  if (!webViewController) throw new Error("[kwikCF] no active WebView session")
+  const baseUrl = getBaseUrl()
+
+  let cdnUrl = ""
   try {
-    console.log("[kwikCF] WebView navigating to kwik download page:", kwikUrl.slice(0, 80))
-    try { await webViewController.loadURL(kwikUrl) } catch { /* ignore */ }
+    // Arm the capture hook — the CDN redirect fires as navType "other"
+    const capture = waitForPaheWinCapture(12000)
+    console.log("[kwikCF] submitting form from kwik.cx page → action:", action.slice(0, 80))
 
-    // Poll until eval(function( appears in the DOM (the packed JS block) or timeout
-    const deadline = Date.now() + 10000
-    while (Date.now() < deadline) {
-      await new Promise<void>(r => setTimeout(r, 600))
-      try {
-        const h = String(
-          (await enqueueWebViewScript(webViewController, "return document.documentElement.outerHTML")) || ""
-        )
-        if (h.includes("eval(function(")) {
-          html = h
-          console.log("[kwikCF] kwik page loaded, html length:", html.length)
-          break
-        }
-        console.log("[kwikCF] waiting for kwik eval block, html len so far:", h.length)
-      } catch { /* page still loading */ }
-    }
+    // Inject and submit form inline in the kwik.cx page (correct Referer/Origin)
+    const safeAction = action.replace(/'/g, "\\'")
+    const safeToken = token.replace(/'/g, "\\'")
+    const formJs =
+      "(function(){" +
+      "var f=document.createElement('form');" +
+      "f.method='POST';f.action='" + safeAction + "';" +
+      "var i=document.createElement('input');" +
+      "i.type='hidden';i.name='_token';i.value='" + safeToken + "';" +
+      "f.appendChild(i);document.body.appendChild(f);f.submit();" +
+      "})()"
+    await enqueueWebViewScript(webViewController, formJs)
+
+    cdnUrl = await capture
+    console.log("[kwikCF] CDN URL captured:", cdnUrl.slice(0, 120))
   } finally {
     console.log("[kwikCF] WebView navigating back to animepahe.pw")
     try { await webViewController.loadURL(baseUrl + "/") } catch { /* ignore */ }
@@ -1184,7 +1220,7 @@ export async function captureKwikPageHtml(kwikUrl: string): Promise<string> {
     _kwikCapturing = false
   }
 
-  return html
+  return cdnUrl
 }
 
 /**

@@ -12,13 +12,13 @@ import {
 } from "./animepaheClient"
 import {
   captureKwikCookies,
-  captureKwikPageHtml,
   getStoredKwikCookies,
   isWebViewSessionActive,
+  openKwikPage,
   paheHeaders,
+  submitKwikFormAndCapture,
   waitForPaheWinCapture,
   webViewNavigateFrame,
-  webViewSubmitForm,
 } from "./animepaheSession"
 
 // ---- Types ----
@@ -154,30 +154,25 @@ function kwikDecrypt(fullString: string, key: string, v1: number, v2: number): s
 //   4. webViewSubmitForm(_token) → iframe POST → capture CDN URL from 302 redirect
 
 /**
- * Read the kwik.cx download page HTML by navigating the background WebView.
+ * Open the kwik.cx download page in the background WebView and return its HTML.
+ * The WebView is left on kwik.cx — caller must call submitKwikFormAndCapture()
+ * immediately after to POST the form with the correct Referer/Origin.
  *
- * Native fetch() uses iOS URLSession whose TLS JA3 fingerprint differs from
- * WKWebView. Cloudflare binds cf_clearance to the fingerprint used at challenge
- * time, so URLSession gets 403 even with valid cookies. Reading the page through
- * the WebView avoids the fingerprint mismatch entirely — same approach Aniyomi
- * uses by keeping all requests inside the same OkHttp client.
+ * Ensures a live CF session exists first; refreshes on missing eval block.
  */
-async function fetchKwikHtml(kwikUrl: string): Promise<string> {
-  // Ensure we have a live kwik.cx CF session before navigating
+async function openKwikPageWithSession(kwikUrl: string): Promise<string> {
   if (!getStoredKwikCookies().cookies) {
     console.log("[kwikMp4] no saved kwik cookies — capturing session first")
     await captureKwikCookies()
   }
 
-  // Attempt 1: navigate WebView to the download page (CF already cleared)
-  console.log("[kwikMp4] fetchKwikHtml reading page via WebView")
-  let html = await captureKwikPageHtml(kwikUrl)
+  let html = await openKwikPage(kwikUrl)
   if (html.includes("eval(function(")) return html
 
-  // CF expired or page not ready — refresh session and retry once
-  console.log("[kwikMp4] fetchKwikHtml: eval block missing, refreshing CF session")
+  // CF might have expired — refresh and retry (openKwikPage navigates back internally on failure)
+  console.log("[kwikMp4] eval block missing — refreshing CF session")
   await captureKwikCookies()
-  html = await captureKwikPageHtml(kwikUrl)
+  html = await openKwikPage(kwikUrl)
   if (!html.includes("eval(function(")) {
     throw new Error("[kwikMp4] kwik page missing eval block after CF refresh (html len: " + html.length + ")")
   }
@@ -207,8 +202,8 @@ async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Pr
     return kwikUrl
   }
 
-  // Step 2 — fetch kwik.cx download page HTML with saved/fresh CF session
-  const html = await fetchKwikHtml(kwikUrl)
+  // Step 2 — open kwik.cx download page in WebView (stays on kwik.cx after)
+  const html = await openKwikPageWithSession(kwikUrl)
   console.log("[kwikMp4] step2 html length:", html.length, "has eval:", html.includes("eval(function("))
 
   // Step 3 — decrypt obfuscated eval() params
@@ -223,11 +218,10 @@ async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Pr
   console.log("[kwikMp4] step3 decrypted — action:", action?.slice(0, 80), "token len:", token?.length)
   if (!action || !token) throw new Error("[kwikMp4] form parse failed")
 
-  // Step 4 — POST _token via iframe, capture 302 → CDN stream URL
-  console.log("[kwikMp4] step4 submitting form")
-  const capture2 = waitForPaheWinCapture(12000)
-  await webViewSubmitForm(action, token, FRAME)
-  const cdnUrl = await capture2
+  // Step 4 — submit form inline from within kwik.cx page (correct Referer/Origin),
+  // capture the CDN redirect URL, then navigate back to animepahe.pw
+  console.log("[kwikMp4] step4 submitting form from kwik.cx page")
+  const cdnUrl = await submitKwikFormAndCapture(action, token)
   console.log("[kwikMp4] step4 done — CDN URL:", cdnUrl.slice(0, 120))
   return cdnUrl
 }
