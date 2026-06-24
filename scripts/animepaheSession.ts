@@ -40,6 +40,30 @@ let webViewJsQueue: WebViewJsJob[] = []
 let webViewJsBusy = false
 let nextWebViewFetchId = 1
 let verificationController: any = null
+
+// ── pahe.win redirect capture ─────────────────────────────────────────────────
+// Set by waitForPaheWinCapture(); fired from shouldAllowRequest when a
+// non-pahe.win / non-CF URL is seen (kwik download URL or CDN stream URL).
+let _paheWinCaptureCallback: ((url: string) => void) | null = null
+
+function interceptPaheWinRedirect(url: string): boolean {
+  if (!_paheWinCaptureCallback) return false
+  if (!url.startsWith("https://")) return false
+  const isOwn =
+    url.includes("pahe.win") ||
+    url.includes("cloudflare") ||
+    url.includes("ddos-guard")
+  if (isOwn) {
+    console.log("[paheWin] shouldAllow → pass-through:", url.slice(0, 80))
+    return false
+  }
+  // Captured — fire and clear callback, signal caller to block navigation
+  console.log("[paheWin] shouldAllow → CAPTURED redirect:", url.slice(0, 120))
+  const cb = _paheWinCaptureCallback
+  _paheWinCaptureCallback = null
+  cb(url)
+  return true
+}
 const WEBVIEW_FETCH_TIMEOUT_MS = 90000
 const fetchTimeouts: Record<number, ReturnType<typeof setTimeout>> = {}
 
@@ -578,6 +602,9 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
   controller.shouldAllowRequest = async function (request: any) {
     if (!request || !request.url) return true
 
+    // pahe.win iframe redirect capture — fires before standard host handling
+    if (interceptPaheWinRedirect(request.url)) return false
+
     if (request.url.indexOf(host) >= 0) {
       const headers = request.headers || {}
       const cookie = headers.Cookie || headers.cookie
@@ -933,59 +960,98 @@ export async function refreshAnimepaheSession(): Promise<boolean> {
   return bootstrapAnimepaheSession()
 }
 
+// ── pahe.win bypass: iframe injection into the EXISTING live WebView ─────────
+//
+// Why not a headless WebViewController?
+//   • iOS WKWebView requires an on-screen (presented) view to execute JS
+//     challenges.  A headless controller throws synchronously, which the Promise
+//     constructor propagates as the raw "Failed to decode data to utf-8 string"
+//     error.
+//   • iOS Scripting's fetch() eagerly decodes every response body as UTF-8, so
+//     even a successful pahe.win/i → kwik → CDN chain throws on the binary CDN
+//     response before .url can be read.
+//
+// Instead we inject an invisible <iframe> into the ALREADY-PRESENTED animepahe
+// WebView (webViewController).  CF/DDoS-Guard challenges run inside that iframe
+// in the live view hierarchy.  The existing shouldAllowRequest hook (now wired
+// to interceptPaheWinRedirect) captures the first non-pahe.win redirect URL and
+// blocks the iframe from loading binary content.
+//
+// This mirrors Aniyomi's noRedirectClient: we read the Location header without
+// ever touching the response body.
+
 /**
- * Resolves a pahe.win URL through a headless WebViewController that auto-solves
- * the Cloudflare JS challenge — mirrors DdosGuardInterceptor + CloudflareBypass.kt.
- *
- * Flow (matches Aniyomi's getStreamUrlFromKwik):
- *   1. Load `paheWinUrl + "/i"` in a background WebView
- *   2. WebView executes Cloudflare JS, obtains cf_clearance
- *   3. Cloudflare redirects → pahe.win redirects → kwik download page (or CDN)
- *   4. shouldAllowRequest fires for every navigation; we intercept the first
- *      non-pahe.win / non-Cloudflare URL and return it as the resolved URL
- *
- * The caller can then either use the URL directly (CDN stream) or fetch it
- * natively to do the kwik form POST (kwikDecrypt → _token → CDN).
+ * Returns a Promise that resolves with the first external (non-pahe.win,
+ * non-Cloudflare) URL seen by shouldAllowRequest while a capture is armed.
+ * Call this BEFORE injecting the iframe so the callback is ready.
  */
-export function resolvePaheWinUrl(paheWinUrl: string): Promise<string> {
+export function waitForPaheWinCapture(timeoutMs = 22000): Promise<string> {
+  // Cancel any stale capture from a previous call
+  _paheWinCaptureCallback = null
+  console.log("[paheWin] capture armed (timeout", timeoutMs + "ms)")
   return new Promise<string>((resolve, reject) => {
-    const targetUrl = paheWinUrl + "/i"
-    let settled = false
-
-    const controller = new WebViewController()
-
-    const settle = (fn: () => void) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      try { controller.loadURL("about:blank") } catch { /* ignore */ }
-      fn()
-    }
-
     const timer = setTimeout(() => {
-      settle(() => reject(new Error("[paheWin] CF bypass timed out")))
-    }, 25000)
-
-    // shouldAllowRequest fires for each main-frame navigation.
-    // Allow pahe.win + Cloudflare through; capture the first external URL.
-    controller.shouldAllowRequest = async function (request: any) {
-      const url: string = request?.url || ""
-      if (!url || !url.startsWith("https://")) return true
-
-      const isOwn =
-        url.includes("pahe.win") ||
-        url.includes("cloudflare") ||
-        url.includes("ddos-guard")
-
-      if (!isOwn) {
-        settle(() => resolve(url))
-        return false // block the WebView navigation — we have the URL
-      }
-      return true
+      _paheWinCaptureCallback = null
+      console.log("[paheWin] capture timed out after", timeoutMs + "ms")
+      reject(new Error("[paheWin] redirect capture timed out"))
+    }, timeoutMs)
+    _paheWinCaptureCallback = (url: string) => {
+      clearTimeout(timer)
+      console.log("[paheWin] capture resolved →", url.slice(0, 120))
+      resolve(url)
     }
-
-    controller.loadURL(targetUrl).catch((err: any) => {
-      settle(() => reject(new Error("[paheWin] loadURL failed: " + String(err))))
-    })
   })
+}
+
+/**
+ * Inject / navigate an invisible <iframe> inside the live animepahe WebView.
+ * Used to trigger a pahe.win Cloudflare challenge silently and capture the
+ * resulting redirect URL via shouldAllowRequest.
+ *
+ * `frameName` lets us reuse the same iframe for a follow-up form POST.
+ */
+export async function webViewNavigateFrame(src: string, frameName: string): Promise<void> {
+  if (!webViewController) throw new Error("[paheWin] no active WebView session")
+  console.log("[paheWin] injecting iframe →", src.slice(0, 100))
+  const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'")
+  const id = "__pvframe_" + esc(frameName)
+  const script =
+    "(function(){" +
+    "var old=document.getElementById('" + id + "');if(old)old.remove();" +
+    "var f=document.createElement('iframe');" +
+    "f.id='" + id + "';" +
+    "f.name='" + esc(frameName) + "';" +
+    // Small but non-zero dimensions avoid some CF headless-detection heuristics
+    "f.style.cssText='position:fixed;width:2px;height:2px;top:0;left:0;opacity:0.01;pointer-events:none;z-index:-999;';" +
+    "f.src='" + esc(src) + "';" +
+    "document.documentElement.appendChild(f);" +
+    "})()"
+  await enqueueWebViewScript(webViewController, script)
+  console.log("[paheWin] iframe injected")
+}
+
+/**
+ * Submit a hidden POST form inside the live WebView targeting `frameName`.
+ * Used after kwikDecrypt to POST `_token` to the kwik form action, then capture
+ * the 302 → CDN stream URL via shouldAllowRequest.
+ */
+export async function webViewSubmitForm(action: string, token: string, frameName: string): Promise<void> {
+  if (!webViewController) throw new Error("[paheWin] no active WebView session")
+  console.log("[paheWin] submitting form → action:", action.slice(0, 100))
+  const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'")
+  const script =
+    "(function(){" +
+    "var f=document.createElement('form');" +
+    "f.method='POST';" +
+    "f.action='" + esc(action) + "';" +
+    "f.target='" + esc(frameName) + "';" +
+    "f.style.display='none';" +
+    "var i=document.createElement('input');" +
+    "i.type='hidden';i.name='_token';i.value='" + esc(token) + "';" +
+    "f.appendChild(i);" +
+    "document.documentElement.appendChild(f);" +
+    "f.submit();f.remove();" +
+    "})()"
+  await enqueueWebViewScript(webViewController, script)
+  console.log("[paheWin] form submitted")
 }

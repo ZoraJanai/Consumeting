@@ -10,7 +10,13 @@ import {
   getDirectBaseUrl,
   paheFetchStreamingSourcesFromApi,
 } from "./animepaheClient"
-import { paheHeaders, resolvePaheWinUrl } from "./animepaheSession"
+import {
+  isWebViewSessionActive,
+  paheHeaders,
+  waitForPaheWinCapture,
+  webViewNavigateFrame,
+  webViewSubmitForm,
+} from "./animepaheSession"
 
 // ---- Types ----
 
@@ -131,24 +137,49 @@ function kwikDecrypt(fullString: string, key: string, v1: number, v2: number): s
   return result
 }
 
-// ─── MP4 extractor — mirrors KwikExtractor.kt + DdosGuardInterceptor ────────
-// Full flow (1:1 Aniyomi):
-//   1. WebView resolves pahe.win/xxx/i, auto-solving Cloudflare challenge
-//   2. First non-pahe.win/non-CF URL captured — kwik.cx/f/xxx download page
-//      (or direct CDN if pahe.win redirects straight there)
-//   3. Fetch kwik download page, decode eval() with kwikDecrypt
-//   4. POST _token to form action → follows 302 redirect to CDN stream URL
+// ─── MP4 extractor — mirrors KwikExtractor.kt (noRedirectClient pattern) ─────
+//
+// Why iframes instead of native fetch or a headless WebView:
+//   • iOS Scripting fetch() eagerly decodes every response body as UTF-8; any
+//     redirect chain that ends in a binary CDN file throws "Failed to decode
+//     data to utf-8 string" even before .text() is called.
+//   • A headless (non-presented) WebViewController cannot execute CF JS
+//     challenges; loadURL() throws synchronously, bypassing our .catch().
+//   • iOS Scripting fetch() does not support redirect:"manual", so we cannot
+//     read the Location header the way Aniyomi's noRedirectClient does.
+//
+// Solution: inject invisible <iframe>s into the ALREADY-PRESENTED animepahe
+// WebView.  The existing shouldAllowRequest hook captures redirect URLs and
+// returns false to block navigation before any binary body is read.
+// This exactly mirrors Aniyomi's noRedirectClient + decidePolicyForNavigationAction.
+//
+// Full flow (1:1 Aniyomi getStreamUrlFromKwik):
+//   1. webViewNavigateFrame(paheWin/i) → CF solved in iframe → capture kwik URL
+//   2. native fetch(kwikUrl) → HTML page (no binary) → kwikDecrypt form params
+//   3. webViewSubmitForm(_token) → iframe POST → capture CDN URL from 302 redirect
 async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Promise<string> {
-  // Step 1 — bypass pahe.win Cloudflare via headless WebView
-  const resolvedUrl = await resolvePaheWinUrl(paheWinUrl)
-
-  // Step 2 — if the WebView landed directly on a CDN (not kwik), return it
-  if (!resolvedUrl.includes("kwik.cx")) {
-    return resolvedUrl
+  if (!isWebViewSessionActive()) {
+    throw new Error("[kwikMp4] WebView session required for CF bypass")
   }
 
-  // Step 3 — fetch the kwik.cx download page and decrypt the form
-  const kwikRes = await fetch(resolvedUrl, {
+  const FRAME = "__kwik_resolve__"
+  console.log("[kwikMp4] step1 start — paheWinUrl:", paheWinUrl)
+
+  // Step 1 — arm capture, inject iframe for pahe.win/i → CF bypass → kwik URL
+  const capture1 = waitForPaheWinCapture(22000)
+  await webViewNavigateFrame(paheWinUrl + "/i", FRAME)
+  const kwikUrl = await capture1
+  console.log("[kwikMp4] step1 done — kwikUrl:", kwikUrl.slice(0, 120))
+
+  // Step 2 — if pahe.win redirected straight to CDN (skipped kwik), return it
+  if (!kwikUrl.includes("kwik.cx")) {
+    console.log("[kwikMp4] step2 direct CDN URL — done")
+    return kwikUrl
+  }
+
+  // Step 3 — native fetch the kwik download page (HTML, not binary — safe)
+  console.log("[kwikMp4] step3 fetching kwik page")
+  const kwikRes = await fetch(kwikUrl, {
     headers: {
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.5",
@@ -156,33 +187,30 @@ async function extractKwikMp4Url(paheWinUrl: string, _animepaheBase: string): Pr
       "Referer": "https://kwik.cx/",
     },
   })
+  console.log("[kwikMp4] step3 kwik response:", kwikRes.status, kwikRes.url.slice(0, 80))
   if (!kwikRes.ok) throw new Error(`[kwikMp4] kwik page ${kwikRes.status}`)
-
   const html = await kwikRes.text()
-  const pm = /\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)/.exec(html)
-  if (!pm) throw new Error("[kwikMp4] decrypt params not found")
+  console.log("[kwikMp4] step3 html length:", html.length, "has eval:", html.includes("eval(function("))
 
+  // Step 4 — decrypt the obfuscated eval() params
+  const pm = /\("(\w+)",\d+,"(\w+)",(\d+),(\d+),\d+\)/.exec(html)
+  if (!pm) {
+    console.log("[kwikMp4] step4 decrypt params not found — html snippet:", html.slice(0, 300))
+    throw new Error("[kwikMp4] decrypt params not found")
+  }
   const decrypted = kwikDecrypt(pm[1], pm[2], parseInt(pm[3], 10), parseInt(pm[4], 10))
   const action = /action="([^"]+)"/.exec(decrypted)?.[1]
   const token = /value="([^"]+)"/.exec(decrypted)?.[1]
+  console.log("[kwikMp4] step4 decrypted — action:", action?.slice(0, 80), "token len:", token?.length)
   if (!action || !token) throw new Error("[kwikMp4] form parse failed")
 
-  // Step 4 — POST _token; iOS fetch follows the 302 → final CDN URL is response.url
-  const postRes = await fetch(action, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Origin": "https://kwik.cx",
-      "Referer": resolvedUrl,
-    },
-    body: "_token=" + encodeURIComponent(token),
-  })
-  const finalUrl = postRes.url
-  if (!finalUrl || finalUrl === action) {
-    throw new Error(`[kwikMp4] POST redirect failed (${postRes.status})`)
-  }
-  return finalUrl
+  // Step 5 — arm capture, POST _token via iframe form → capture 302 → CDN URL
+  console.log("[kwikMp4] step5 submitting form")
+  const capture2 = waitForPaheWinCapture(12000)
+  await webViewSubmitForm(action, token, FRAME)
+  const cdnUrl = await capture2
+  console.log("[kwikMp4] step5 done — CDN URL:", cdnUrl.slice(0, 120))
+  return cdnUrl
 }
 
 // ─── HLS extractor (Aniyomi: getHlsStreamUrl — eval packed JS, find m3u8) ──
