@@ -115,8 +115,16 @@ function TapMenu({
         )}
         <Button title="Choose"  action={() => animeInfo(anime, "Choose")} />
         <Menu label={<Text>Download</Text>}>
-          <Button title="Continue" action={() => animeInfo(anime, "Continue")} />
-          <Button title="Jump"     action={() => animeInfo(anime, "Jump")} />
+          <Button title="Continue"      action={() => animeInfo(anime, "Continue")} />
+          <Button title="Jump"          action={() => animeInfo(anime, "Jump")} />
+          {(() => {
+            const [cur, tot] = anime.episodes.includes("/")
+              ? anime.episodes.split("/")
+              : ["0", "0"]
+            return Number(tot) - Number(cur) > 0
+              ? <Button title="All Unwatched" action={() => animeInfo(anime, "DownloadAll")} />
+              : null
+          })()}
         </Menu>
       </>
     )
@@ -304,6 +312,22 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
     const current = anime.episodes.includes("/")
       ? Number(anime.episodes.split("/")[0])
       : 0
+
+    if (action === "DownloadAll") {
+      const total = Number(info.total)
+      if (current >= total) { hideOverlay(); return }
+      const start = current + 1
+      saveSetting("entry", info)
+      setEntry(info)
+      const q = { ...info }
+      q.ids = q.ids.slice(Math.max(0, start - 1), Math.max(0, total))
+      q.episode = String(start)
+      q.total = String(total)
+      setQueueEntry(q)
+      saveSetting("queueEntry", q)
+      await episodeThenUpdate(-44)
+      return
+    }
 
     const auto = episodeNumber(current, Number(info.total), action)
     console.log(auto)
@@ -553,6 +577,64 @@ function askQualityOnce(title: string, options: string[]): Promise<string> {
   setRefreshing(false)
 }
 
+  async function downloadAllUnwatched() {
+    const unwatched = animes.filter(a =>
+      a.isUnread &&
+      a.episodes.includes("/") &&
+      Number(a.episodes.split("/")[0]) < Number(a.episodes.split("/")[1])
+    )
+    if (unwatched.length === 0) return
+
+    showOverlay()
+    setProgressKey(k => k + 1)
+    setDownloadDone(0)
+    setDownloadTotal(0)
+    setProgressStarted(false)
+    setDownloading(true)
+
+    for (const anime of unwatched) {
+      try {
+        const info = await chosenAnime(anime)
+        const current = Number(anime.episodes.split("/")[0])
+        const total = Number(info.total)
+        if (current >= total) continue
+
+        const start = current + 1
+        saveSetting("entry", info)
+        setEntry(info)
+
+        const q = { ...info }
+        q.ids = q.ids.slice(Math.max(0, start - 1), Math.max(0, total))
+        q.episode = String(start)
+        q.total = String(total)
+        setQueueEntry(q)
+        saveSetting("queueEntry", q)
+
+        const tuple = await downloadEpisode(
+          (done, total) => { setProgressStarted(true); setDownloadDone(done); setDownloadTotal(total) },
+          (total) => { setDownloadDone(0); setDownloadTotal(total) },
+          async (options) => await askQualityOnce("Which quality?", options)
+        )
+
+        const [cacheItem, queueItem] = tuple
+        const updatedCache = await addCache(cacheItem)
+        setAnimes(updatedCache)
+        saveSetting(CACHE_KEY, updatedCache)
+        onCacheSaved?.()
+
+        const updatedQueue = await addQueue(queueItem)
+        setQueue(updatedQueue)
+        saveSetting(QUEUE_KEY, updatedQueue)
+        onQueueSaved?.()
+      } catch (err) {
+        console.log(`[downloadAll] failed for ${(anime as Anime).name}`, err)
+      }
+    }
+
+    setDownloading(false)
+    hideOverlay()
+  }
+
   function SegmentedProgress({
   done, total, label
 }: { done: number; total: number; label?: string }) {
@@ -627,6 +709,15 @@ return (
         navigationBarTitleDisplayMode="inline"
         listStyle="inset"
         refreshable={refresh}
+        toolbar={{
+          confirmationAction: [
+            <Button
+              title=""
+              systemImage="arrow.down.to.line"
+              action={downloadAllUnwatched}
+            />
+          ]
+        }}
         overlay={
           loadedOnce && animes.length === 0
             ? <ContentUnavailableView title="Nothing here to check" systemImage="aqi.medium" />
