@@ -1066,7 +1066,7 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
   if (!webViewController) throw new Error("[kwikCF] no active WebView session")
 
   console.log("[kwikCF] navigating WebView to kwik.cx for CF session capture")
-  await webViewController.loadUrl("https://kwik.cx/")
+  try { await webViewController.loadURL("https://kwik.cx/") } catch { /* ignore */ }
 
   // Poll cookie jar until kwik.cx cf_clearance appears
   const deadline = Date.now() + 25000
@@ -1104,7 +1104,7 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
   // Navigate the WebView back to animepahe.pw so iframe injections keep working
   const baseUrl = getBaseUrl()
   console.log("[kwikCF] navigating WebView back to animepahe.pw")
-  await webViewController.loadUrl(baseUrl + "/")
+  try { await webViewController.loadURL(baseUrl + "/") } catch { /* ignore */ }
   // Give the page time to settle before the next iframe injection
   await new Promise<void>(r => setTimeout(r, 3000))
 
