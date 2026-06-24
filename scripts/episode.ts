@@ -245,12 +245,10 @@ export async function getAnidapSources(
 
   if (!winnerResult) throw new Error(`[anidap] no working sub provider found for ep ${ep}`)
 
-  // Bubble winner to position 1 (right after the stage-1 slot) so next time
-  // it's tried first in stage 1 before going parallel.
+  // Promote winner to the front so next episode it's tried first in stage 1.
   const winner = winnerResult.providerId
-  console.log("[getAnidapSources] bubbling winner to slot 1:", winner)
-  const next = providerOrder.filter(id => id !== winner)
-  next.splice(1, 0, winner)
+  console.log("[getAnidapSources] promoting winner to front:", winner)
+  const next = [winner, ...providerOrder.filter(id => id !== winner)]
   saveSetting(STORAGE_KEYS.ANIDAP_PROVIDER_ORDER, next)
 
   return winnerResult.map
