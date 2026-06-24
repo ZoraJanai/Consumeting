@@ -272,23 +272,23 @@ async function anidapFetchInfo(slug: string): Promise<{ title: string; image?: s
   try {
     const res = await anidapFetch(url, `${BASE}/info/${slug}`)
     if (!res.ok) {
-      console.log("[anidap] REST info not available:", res.status, "— using slug as title")
-      return { title: slug }
+      console.log("[anidap] REST info not available:", res.status)
+      return { title: "" }
     }
     const raw = await res.json()
     const d = raw.data ?? raw
     console.log("[anidap] REST info keys:", JSON.stringify(Object.keys(d ?? {})).substring(0, 200))
-    const title =
+    const title: string =
       d?.titleEnglish || d?.titleRomaji ||
       d?.title?.english || d?.title?.romaji || d?.title?.native ||
-      d?.title || d?.name || slug
-    const image =
+      d?.title || d?.name || ""
+    const image: string | undefined =
       d?.coverImage?.extraLarge || d?.coverImage?.large ||
       d?.bannerImage || d?.image || undefined
     return { title, image }
   } catch (err) {
-    console.log("[anidap] REST info error:", String(err), "— using slug as title")
-    return { title: slug }
+    console.log("[anidap] REST info error:", String(err))
+    return { title: "" }
   }
 }
 
@@ -346,20 +346,23 @@ export async function anidapFetchProviders(slug: string, ep: number): Promise<An
 
 // ─────────────────────────────────────────────
 // API: fetch sources for a specific sub provider
-// Returns the master m3u8 URL, or null if unavailable
+// Returns quality variants ready to use, or null if unavailable / headers required
+// Handles both response formats:
+//   A) single "auto" master m3u8 → fetches + parses the master playlist
+//   B) multiple explicit quality entries → uses them directly
 // ─────────────────────────────────────────────
 
 export async function anidapFetchSourcesByProvider(
   slug: string,
   ep: number,
   providerId: string
-): Promise<string | null> {
+): Promise<AnidapQualityVariant[] | null> {
   const referer = `${BASE}/watch?id=${slug}&epNum=${ep}&type=sub&provider=${providerId}`
   const url = `${API}/sources?id=${slug}&epNum=${ep}&type=sub&providerId=${providerId}`
   const res = await anidapFetch(url, referer)
   if (!res.ok) {
-    const body = await res.text().catch(() => "")
-    console.log(`[anidap] sources ${providerId} non-ok: ${res.status}`, body.substring(0, 120))
+    const errBody = await res.text().catch(() => "")
+    console.log(`[anidap] sources ${providerId} non-ok: ${res.status}`, errBody.substring(0, 120))
     return null
   }
 
@@ -367,10 +370,30 @@ export async function anidapFetchSourcesByProvider(
   const sources: any[] = body.sources ?? []
   if (!sources.length) return null
 
-  // Prefer mpegurl / m3u8 source
-  const src = sources.find((s: any) => s.type === "video/mpegurl" || String(s.url).includes(".m3u8"))
+  // Skip if custom headers are required — native players cannot set them
+  const reqHeaders: Record<string, string> = body.headers ?? {}
+  if (Object.keys(reqHeaders).length > 0) {
+    console.log(`[anidap] ${providerId} requires headers (${Object.keys(reqHeaders).join(",")}) — skipping`)
+    return null
+  }
+
+  // Format B: explicit quality entries already in the sources array
+  const hasExplicitQualities = sources.some(
+    (s: any) => s.quality && s.quality !== "auto"
+  )
+  if (hasExplicitQualities || sources.length > 1) {
+    return sources
+      .filter((s: any) => s.url)
+      .map((s: any) => ({ label: s.quality || "auto", url: s.url as string }))
+  }
+
+  // Format A: single "auto" entry → fetch master m3u8 and parse variants
+  const masterSrc =
+    sources.find((s: any) => s.type === "video/mpegurl" || String(s.url).includes(".m3u8"))
     ?? sources[0]
-  return src?.url ?? null
+  if (!masterSrc?.url) return null
+
+  return await anidapExtractQualities(masterSrc.url as string)
 }
 
 // ─────────────────────────────────────────────

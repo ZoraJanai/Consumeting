@@ -165,7 +165,9 @@ export function AnimeCell({
               {anime.name}
             </Text>
             <Text multilineTextAlignment="leading" foregroundStyle="lightGray" fontWeight="light">
-              {anime.source}
+              {anime.source.startsWith("anidap:")
+                ? "Anidap · " + anime.source.replace("anidap:", "")
+                : anime.source}
             </Text>
             <HStack>
               

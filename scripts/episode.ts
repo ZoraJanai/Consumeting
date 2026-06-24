@@ -7,7 +7,7 @@ import { hideOverlay, showOverlay } from "../Pages/Loading"
 import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
-import { anidapFetchProviders, anidapFetchSourcesByProvider, anidapExtractQualities } from "./anidapClient"
+import { anidapFetchProviders, anidapFetchSourcesByProvider } from "./anidapClient"
 import { AnidapProviderOrder, AnidapQualityOrder } from "../Pages/Settings"
 
 
@@ -145,7 +145,9 @@ export async function getAnidapSources(
   console.log("[getAnidapSources] ordered providers:", ordered.join(" → "))
 
   // ── 3. Auto or manual provider selection ──────────────────────────────────
-  const autoProvider = loadSetting(STORAGE_KEYS.AUTO_PROVIDER, true)
+  // Coerce to boolean — iOS Storage may return "false" (string) which is truthy
+  const autoProvider = String(loadSetting(STORAGE_KEYS.AUTO_PROVIDER, true)) !== "false"
+  console.log("[getAnidapSources] autoProvider:", autoProvider)
 
   let providersToTry: string[]
   if (!autoProvider && askProvider && ordered.length > 0) {
@@ -156,23 +158,20 @@ export async function getAnidapSources(
     providersToTry = ordered
   }
 
-  // ── 4. Try providers until one has a working master m3u8 ──────────────────
+  // ── 4. Try providers until one returns valid quality variants ──────────────
   for (const providerId of providersToTry) {
     try {
-      const masterUrl = await anidapFetchSourcesByProvider(slug, ep, providerId)
-      if (!masterUrl) {
-        console.log("[getAnidapSources] no URL from provider:", providerId)
+      // Returns variants directly (handles master m3u8 parsing + headers check internally)
+      const variants = await anidapFetchSourcesByProvider(slug, ep, providerId)
+      if (!variants || !variants.length) {
+        console.log("[getAnidapSources] no variants from provider:", providerId)
         continue
       }
-      console.log("[getAnidapSources] provider", providerId, "master:", masterUrl.substring(0, 80))
-
-      // ── 5. Extract quality variants from master playlist ───────────────────
-      const variants = await anidapExtractQualities(masterUrl)
-      console.log("[getAnidapSources] qualities:", variants.map(v => v.label).join(", "))
+      console.log("[getAnidapSources] provider", providerId, "qualities:", variants.map(v => v.label).join(", "))
 
       const map: QualityMap = {}
       for (const v of variants) map[`-${v.label}`] = v.url
-      if (!map["-auto"]) map["-auto"] = masterUrl
+      if (!map["-auto"]) map["-auto"] = variants[0].url  // always have a fallback
 
       return map
     } catch (err) {
