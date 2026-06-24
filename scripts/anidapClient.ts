@@ -133,15 +133,24 @@ function anidapHeaders(referer?: string): Record<string, string> {
   return {
     "user-agent": UA,
     "referer": referer ?? (BASE + "/"),
-    "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-site": "same-origin",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-dest": "empty",
-    "accept": "*/*",
+    "accept": "application/json, */*",
     "accept-language": "en-US,en;q=0.9",
-    "content-type": "application/json",
+  }
+}
+
+async function anidapFetch(url: string, referer?: string, timeoutMs = 12000): Promise<Response> {
+  console.log("[anidap] fetch:", url)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      headers: anidapHeaders(referer),
+      signal: controller.signal as any,
+    })
+    console.log("[anidap] response:", res.status, url.slice(url.lastIndexOf("/") + 1, url.lastIndexOf("/") + 30))
+    return res
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -179,8 +188,7 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
 
   // Numeric AniList ID — fetch RSC payload to resolve slug
   const url = `${BASE}/info/${id}.data`
-  console.log("[anidap] resolving slug via RSC:", url)
-  const res = await fetch(url, { headers: anidapHeaders() })
+  const res = await anidapFetch(url)
   if (!res.ok) throw new Error(`[anidap] info fetch failed: ${res.status}`)
 
   const text = await res.text()
@@ -202,7 +210,7 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
 async function anidapFetchInfo(slug: string): Promise<{ title: string; image?: string }> {
   const url = `${API}/info?id=${slug}`
   try {
-    const res = await fetch(url, { headers: anidapHeaders(`${BASE}/info/${slug}`) })
+    const res = await anidapFetch(url, `${BASE}/info/${slug}`)
     if (!res.ok) {
       console.log("[anidap] REST info not available:", res.status, "— using slug as title")
       return { title: slug }
@@ -230,7 +238,7 @@ async function anidapFetchInfo(slug: string): Promise<{ title: string; image?: s
 
 export async function anidapFetchEpisodes(slug: string): Promise<AnidapEpisode[]> {
   const url = `${API}/episodes?id=${slug}`
-  const res = await fetch(url, { headers: anidapHeaders(`${BASE}/watch?id=${slug}&ep=1`) })
+  const res = await anidapFetch(url, `${BASE}/watch?id=${slug}&ep=1`)
   if (!res.ok) {
     const body = await res.text().catch(() => "(unreadable)")
     throw new Error(`[anidap] episodes failed: ${res.status} — ${body.substring(0, 300)}`)
@@ -261,7 +269,7 @@ export interface AnidapServer {
 export async function anidapFetchServers(slug: string, ep: number): Promise<AnidapServer[]> {
   const referer = `${BASE}/watch?id=${slug}&ep=${ep}&type=sub`
   const url = `${API}/servers?id=${slug}&ep=${ep}`
-  const res = await fetch(url, { headers: anidapHeaders(referer) })
+  const res = await anidapFetch(url, referer)
   if (!res.ok) throw new Error(`[anidap] servers failed: ${res.status}`)
 
   const raw = await res.json()
@@ -302,8 +310,8 @@ export async function anidapFetchSources(
     try {
       const referer = `${BASE}/watch?id=${slug}&ep=${ep}&type=${srv.type}&provider=${srv.name}`
       const url = `${API}/sources?id=${slug}&ep=${ep}&host=${srv.name}&type=${srv.type}`
-      const res = await fetch(url, { headers: anidapHeaders(referer) })
-      if (!res.ok) continue
+      const res = await anidapFetch(url, referer)
+      if (!res.ok) { console.log("[anidap] sources non-ok:", res.status, srv.name, srv.type); continue }
 
       const body = await res.json()
       const encrypted: string = body.data
