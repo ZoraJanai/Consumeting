@@ -193,6 +193,7 @@ export async function getAnidapSources(
   setProviderBar(0, total2, "Trying fallback providers…")
 
   let completedCount = 0
+  let raceResolved = false  // guards stale callbacks after winner is found
   const settled = new Array<boolean>(total2).fill(false)
   const results = new Array<QualityMap | null>(total2).fill(null)
 
@@ -217,6 +218,7 @@ export async function getAnidapSources(
     fallbacks.forEach((providerId, i) => {
       anidapFetchSourcesByProvider(slug, ep, providerId)
         .then(variants => {
+          if (raceResolved) return  // winner already found — discard late result
           if (variants && variants.length) {
             results[i] = buildMap(variants)
             console.log("[getAnidapSources] stage2", providerId, "qualities:", variants.map(v => v.label).join(", "))
@@ -227,6 +229,7 @@ export async function getAnidapSources(
           }
         })
         .catch(err => {
+          if (raceResolved) return
           console.log("[getAnidapSources] stage2 error:", providerId, String(err))
           setProviderBar(++completedCount, total2, `${providerId} ✗`)
         })
@@ -237,6 +240,7 @@ export async function getAnidapSources(
     })
   })
 
+  raceResolved = true
   clearProviderBar()
 
   if (!winnerResult) throw new Error(`[anidap] no working sub provider found for ep ${ep}`)

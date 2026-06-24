@@ -8,35 +8,27 @@ let setProviderBarGlobal: ((s: ProviderBarState | null) => void) | null = null
 
 type ProviderBarState = { done: number; total: number; label: string }
 
-// ── Provider progress bar (shown centered over the dim overlay) ────────────
+// ── Provider progress bar — floats over the dim, no card background ─────────
 function ProviderProgressBar({ done, total, label }: ProviderBarState) {
+  const segW = Math.max(10, Math.min(28, Math.floor(240 / total) - 4))
   const segments: JSX.Element[] = []
   for (let i = 0; i < total; i++) {
     segments.push(
       <RoundedRectangle
         key={`p-${i}`}
-        fill={i < done ? "systemBlue" : "secondarySystemFill"}
-        cornerRadius={2}
-        frame={{ width: Math.max(8, Math.min(24, Math.floor(220 / total) - 4)), height: 6 }}
+        fill={i < done ? "systemBlue" : "tertiaryLabel"}
+        cornerRadius={3}
+        frame={{ width: segW, height: 6 }}
       />
     )
   }
   return (
-    <ZStack
-      frame={{ width: 260 }}
-      padding={{ top: 20, bottom: 16, leading: 20, trailing: 20 }}
-    >
-      <RoundedRectangle fill="secondarySystemBackground" cornerRadius={18} />
-      <VStack spacing={10} padding={{ top: 20, bottom: 16, leading: 20, trailing: 20 }}>
-        <Text font={13} fontWeight="semibold" foregroundStyle="white">
-          Fetching Source
-        </Text>
-        <HStack spacing={3}>{segments}</HStack>
-        <Text font={12} foregroundStyle="lightGray" lineLimit={1} truncationMode="tail">
-          {label}
-        </Text>
-      </VStack>
-    </ZStack>
+    <VStack spacing={8}>
+      <HStack spacing={4}>{segments}</HStack>
+      <Text font={12} foregroundStyle="white" lineLimit={1} truncationMode="tail">
+        {label}
+      </Text>
+    </VStack>
   )
 }
 
@@ -65,6 +57,7 @@ export function showOverlay() {
 
 export function hideOverlay() {
   if (setVisibleGlobal) setVisibleGlobal(false)
+  if (setProviderBarGlobal) setProviderBarGlobal(null) // always clear bar on hide
 }
 
 export function setProviderBar(done: number, total: number, label: string) {
