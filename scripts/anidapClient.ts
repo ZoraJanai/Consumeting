@@ -167,7 +167,19 @@ export interface AnidapEpisode {
 // ─────────────────────────────────────────────
 
 export async function anidapResolveSlug(anilistId: string | number): Promise<AnidapInfo> {
-  const url = `${BASE}/info/${anilistId}.data`
+  const id = String(anilistId)
+
+  // If already in "anidap:slug" format (cached entry re-fetch), extract slug directly
+  if (id.startsWith("anidap:")) {
+    const slug = id.replace(/^anidap:/, "")
+    console.log("[anidap] slug from cached source:", slug)
+    const { title, image } = await anidapFetchInfo(slug)
+    return { slug, title, image }
+  }
+
+  // Numeric AniList ID — fetch RSC payload to resolve slug
+  const url = `${BASE}/info/${id}.data`
+  console.log("[anidap] resolving slug via RSC:", url)
   const res = await fetch(url, { headers: anidapHeaders() })
   if (!res.ok) throw new Error(`[anidap] info fetch failed: ${res.status}`)
 
@@ -177,14 +189,12 @@ export async function anidapResolveSlug(anilistId: string | number): Promise<Ani
   // The RSC payload is a streaming reference-graph array. The actual animeData
   // is behind a Suspense boundary (negative index = pending), but requestedId
   // always resolves and contains the slug as "anidap:<slug>".
-  // Fastest extraction: regex for the anidap: prefix pattern anywhere in the payload.
   const slugMatch = /"anidap:([a-z0-9][a-z0-9-]+)"/.exec(text)
   if (!slugMatch) throw new Error(`[anidap] could not extract slug from response: ${text.substring(0, 300)}`)
 
   const slug = slugMatch[1]
   console.log("[anidap] extracted slug:", slug)
 
-  // Fetch full info from REST API now that we have the slug
   const { title, image } = await anidapFetchInfo(slug)
   return { slug, title, image }
 }

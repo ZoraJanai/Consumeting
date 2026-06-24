@@ -188,15 +188,19 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
 
     hideOverlay()
     return
-  }else{
-      const anime = await getEpisode(index, async (options) => await askQualityOnce("Which quality?", options)   // 👈 add this
-)
+  } else {
+    try {
+      const anime = await getEpisode(index, async (options) => await askQualityOnce("Which quality?", options))
       const next = await addCache(anime)
-      setAnimes([next[0]])                        // optimistic UI - show first entry
-      saveSetting(CACHE_KEY, [next[0]])          // distinct key
+      setAnimes([next[0]])
+      saveSetting(CACHE_KEY, [next[0]])
       handleCacheSaved()
+    } catch (err) {
+      console.error("[episodeThenUpdate] getEpisode failed:", String(err))
+      hideOverlay()
     }
   }
+}
 
   // unified search effect
   useEffect(() => {
@@ -232,9 +236,10 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
   }, [searchText, provider])
 
   async function animeInfo(anime: Anime, action: string) {
+    try {
     showOverlay()
     const info = await chosenAnime(anime)
-    console.log(info)
+    console.log("[animeInfo] chosenAnime:", info?.id, "total:", info?.total)
 
     const current = anime.episodes.includes("/")
       ? Number(anime.episodes.split("/")[0])
@@ -353,6 +358,10 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
       })
       hideOverlay()
       return
+    }
+    } catch (err) {
+      console.error("[animeInfo] error:", String(err))
+      hideOverlay()
     }
   }
   

@@ -116,16 +116,20 @@ export async function getAnimepaheSources(id: string): Promise<QualityMap> {
 // ---- 1b. Get Anidap Sources ----
 // Episode ID format: "anidap:{slug}:{episodeNumber}"
 export async function getAnidapSources(episodeId: string): Promise<QualityMap> {
+  console.log("[getAnidapSources] episodeId:", episodeId)
   const parts = episodeId.split(":")
   // parts = ["anidap", slug, epNumber]
   const slug = parts.slice(1, -1).join(":")
   const ep = Number(parts[parts.length - 1])
   if (!slug || isNaN(ep)) throw new Error(`[anidap] invalid episode id: ${episodeId}`)
 
+  console.log("[getAnidapSources] slug:", slug, "ep:", ep)
   const servers = await anidapFetchServers(slug, ep)
+  console.log("[getAnidapSources] servers:", JSON.stringify(servers))
   if (!servers.length) throw new Error(`[anidap] no servers found for ep ${ep}`)
 
   const sources = await anidapFetchSources(slug, ep, servers)
+  console.log("[getAnidapSources] sources keys:", Object.keys(sources))
   if (!Object.keys(sources).length) throw new Error(`[anidap] no sources decrypted for ep ${ep}`)
 
   return sources
@@ -227,6 +231,7 @@ export async function getEpisode(
   index: number,
   askQuality?: (options: string[]) => Promise<string>
 ): Promise<Anime> {
+  console.log("[getEpisode] index:", index)
   showOverlay()
 
   const noDownload: Anime = { name: "", source: "", episodes: "", img: "", isUnread: false }
@@ -238,6 +243,8 @@ export async function getEpisode(
   const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
 
   const episodeId = entry.ids[index - 1]
+  console.log("[getEpisode] episodeId:", episodeId, "player:", player)
+
   const isAnidap = episodeId?.startsWith("anidap:")
   const sources = isAnidap
     ? await getAnidapSources(episodeId)
