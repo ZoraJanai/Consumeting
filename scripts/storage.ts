@@ -9,6 +9,8 @@ export const STORAGE_KEYS = {
   ANIMEPAHE_API_URL: "settings.animepaheApiUrl",
   ANIMEPAHE_COOKIES: "settings.animepaheCookies",
   ANIMEPAHE_WEBVIEW_SESSION: "settings.animepaheWebViewSession",
+  KWIK_COOKIES: "settings.kwikCookies",
+  KWIK_USER_AGENT: "settings.kwikUserAgent",
   RUST_PROXY_URL: "settings.rustProxyUrl",
 }
 

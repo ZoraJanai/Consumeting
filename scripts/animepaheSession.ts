@@ -1038,35 +1038,50 @@ export function waitForPaheWinCapture(timeoutMs = 22000, blockOnCapture = true):
   })
 }
 
-/**
- * Poll the live WebView's cookie jar until kwik.cx has a `cf_clearance` cookie,
- * then return all kwik.cx cookies + the WebView's User-Agent.
- *
- * Mirrors Aniyomi's CloudflareBypass.pollForClearance().
- * Called after webViewNavigateFrame navigates to kwik.cx/f/xxx (with CF bypass
- * happening inside the live WebView's iframe).
- */
-export async function webViewWaitForKwikClearance(
-  timeoutMs: number
-): Promise<{ cookies: string; userAgent: string }> {
-  if (!webViewController) throw new Error("[kwikCF] no active WebView session")
-  if (typeof webViewController.getAllCookies !== "function") {
-    throw new Error("[kwikCF] getAllCookies unavailable")
-  }
+// ── kwik.cx session (mirrors animepahe.pw pattern) ────────────────────────────
 
-  const deadline = Date.now() + timeoutMs
-  console.log("[kwikCF] polling for kwik.cx cf_clearance cookie")
+/** Return saved kwik.cx CF cookies + User-Agent from storage. */
+export function getStoredKwikCookies(): { cookies: string; userAgent: string } {
+  return {
+    cookies: loadSetting(STORAGE_KEYS.KWIK_COOKIES, ""),
+    userAgent: loadSetting(STORAGE_KEYS.KWIK_USER_AGENT, ""),
+  }
+}
+
+function saveKwikCookies(cookies: string, userAgent: string): void {
+  saveSetting(STORAGE_KEYS.KWIK_COOKIES, cookies)
+  if (userAgent) saveSetting(STORAGE_KEYS.KWIK_USER_AGENT, userAgent)
+}
+
+/**
+ * Navigate the live (background) WebView to kwik.cx, let it solve the
+ * Cloudflare challenge, save the resulting cookies + User-Agent to storage,
+ * then navigate back to animepahe.pw.
+ *
+ * Mirrors Aniyomi's CloudflareBypass.getCookies() + fetchKwikHtml flow.
+ * Should be called once (on demand) and results reused across requests, just
+ * like the animepahe.pw session.
+ */
+export async function captureKwikCookies(): Promise<{ cookies: string; userAgent: string }> {
+  if (!webViewController) throw new Error("[kwikCF] no active WebView session")
+
+  console.log("[kwikCF] navigating WebView to kwik.cx for CF session capture")
+  await webViewController.loadUrl("https://kwik.cx/")
+
+  // Poll cookie jar until kwik.cx cf_clearance appears
+  const deadline = Date.now() + 25000
+  let result: { cookies: string; userAgent: string } | null = null
 
   while (Date.now() < deadline) {
     await new Promise<void>(r => setTimeout(r, 800))
     try {
+      if (typeof webViewController.getAllCookies !== "function") break
       const all: any[] = (await webViewController.getAllCookies()) || []
       const kwik = all.filter((c: any) => {
         const d = ((c.domain as string) || "").replace(/^\./, "").toLowerCase()
         return d === "kwik.cx" || d.endsWith(".kwik.cx")
       })
-      const hasCf = kwik.some((c: any) => c.name === "cf_clearance")
-      if (!hasCf) {
+      if (!kwik.some((c: any) => c.name === "cf_clearance")) {
         console.log("[kwikCF] no cf_clearance yet, kwik cookie count:", kwik.length)
         continue
       }
@@ -1076,18 +1091,30 @@ export async function webViewWaitForKwikClearance(
         .join("; ")
       let userAgent = ""
       try {
-        const ua = await enqueueWebViewScript(webViewController, "return navigator.userAgent")
-        userAgent = String(ua || "")
+        userAgent = String((await enqueueWebViewScript(webViewController, "return navigator.userAgent")) || "")
       } catch { /* ignore */ }
       console.log("[kwikCF] cf_clearance obtained, cookies len:", cookieHeader.length, "UA:", userAgent.slice(0, 80))
-      return { cookies: cookieHeader, userAgent }
+      result = { cookies: cookieHeader, userAgent }
+      break
     } catch (e) {
       console.log("[kwikCF] poll error:", String(e))
     }
   }
 
-  console.log("[kwikCF] timed out — will attempt native fetch without CF cookies")
-  throw new Error("[kwikCF] timed out waiting for kwik.cx cf_clearance")
+  // Navigate the WebView back to animepahe.pw so iframe injections keep working
+  const baseUrl = getBaseUrl()
+  console.log("[kwikCF] navigating WebView back to animepahe.pw")
+  await webViewController.loadUrl(baseUrl + "/")
+  // Give the page time to settle before the next iframe injection
+  await new Promise<void>(r => setTimeout(r, 3000))
+
+  if (!result) {
+    console.log("[kwikCF] timed out waiting for kwik.cx cf_clearance")
+    throw new Error("[kwikCF] kwik.cx CF clearance not obtained")
+  }
+
+  saveKwikCookies(result.cookies, result.userAgent)
+  return result
 }
 
 /**
