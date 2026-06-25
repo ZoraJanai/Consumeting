@@ -54,14 +54,24 @@ async function directFetch(
       if (!isChallengePage(body)) return body
     }
 
-    if (result.status === 429) {
-      console.log("[animepaheClient] 429 rate-limit — waiting 10s before retry")
+    // Rate limited — back off, don't re-bootstrap
+    if (result.status === 429 || result.status === 503) {
+      console.log(`[animepaheClient] HTTP ${result.status} rate-limit — waiting 10s`)
       await new Promise<void>(r => setTimeout(r, 10000))
       return directFetch(requestUrl, headers, retried, expectJson)
     }
 
-    if (!retried && (result.status === 403 || result.status === 503 || isChallengePage(body))) {
-      console.log("[animepaheClient] WebView session expired, re-bootstrapping")
+    // Temporary block (no CF page) — back off once, don't re-bootstrap
+    if (result.status === 403 && !isChallengePage(body)) {
+      if (retried) throw new Error("Animepahe blocked 403")
+      console.log("[animepaheClient] HTTP 403 temp block — waiting 8s")
+      await new Promise<void>(r => setTimeout(r, 8000))
+      return directFetch(requestUrl, headers, true, expectJson)
+    }
+
+    // Actual CF challenge — session truly expired, re-bootstrap
+    if (!retried && isChallengePage(body)) {
+      console.log("[animepaheClient] CF challenge — re-bootstrapping")
       await bootstrapAnimepaheSession()
       return directFetch(requestUrl, headers, true, expectJson)
     }
