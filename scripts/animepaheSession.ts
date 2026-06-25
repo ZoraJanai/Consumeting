@@ -577,7 +577,6 @@ async function registerWebViewHandlers(controller: any, baseUrl: string) {
       // Suppress during kwik.cx CF capture — we intentionally left animepahe.pw
       if (_kwikCapturing) return "ok"
       if (isBlankOrWrongHost(pageUrl, baseUrl)) {
-        console.log("[animepaheSession] Blank or wrong host — reloading home")
         await loadWebViewHome(controller, baseUrl)
         return "ok"
       }
@@ -843,9 +842,11 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
 
     await preloadStoredCookies(controller, baseUrl)
 
-    // Start navigation but do not waitForLoad before present — on a fresh WebView that
-    // resolves on about:blank and the sheet opens empty (Scripting loads after attach).
+    // Fire navigation, give it a moment to start before the sheet opens.
+    // Awaiting loadURL fully resolves on about:blank in Scripting (loads after attach),
+    // so we use a short pause instead to let the real page begin loading.
     void loadWebViewHome(controller, baseUrl)
+    await new Promise<void>(r => setTimeout(r, 600))
     await injectContinueButton(controller)
 
     await controller.present({
