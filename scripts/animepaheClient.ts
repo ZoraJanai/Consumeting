@@ -54,6 +54,12 @@ async function directFetch(
       if (!isChallengePage(body)) return body
     }
 
+    if (result.status === 429) {
+      console.log("[animepaheClient] 429 rate-limit — waiting 10s before retry")
+      await new Promise<void>(r => setTimeout(r, 10000))
+      return directFetch(requestUrl, headers, retried, expectJson)
+    }
+
     if (!retried && (result.status === 403 || result.status === 503 || isChallengePage(body))) {
       console.log("[animepaheClient] WebView session expired, re-bootstrapping")
       await bootstrapAnimepaheSession()
