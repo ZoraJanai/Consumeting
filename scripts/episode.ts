@@ -418,7 +418,7 @@ export async function downloadEpisode(
   }
 
   await Promise.all(
-    Array.from({ length: Math.min(3, total) }, async () => {
+    Array.from({ length: Math.min(2, total) }, async () => {
       while (true) {
         const i = cursor++
         if (i >= total) break
