@@ -403,26 +403,26 @@ export async function downloadEpisode(
   const escapedName = safeName.replace(/([^a-zA-Z0-9.\-_:=@])/g, '\\$1')
   const links: string[] = [`mkdir "${safeName}"`]
 
-  // Phase 1: fetch all episode sources in parallel (3 workers, 125ms global gap)
+  // Phase 1: 2 workers, each with its own 2000ms per-worker pace.
+  // Per-worker (not global) delay means both run truly in parallel:
+  // worker A: ep1 @ 0s, ep3 @ ~3s, ep5 @ ~6s …
+  // worker B: ep2 @ 0s, ep4 @ ~3s, ep6 @ ~6s …
+  // → 12 episodes in ~18s instead of 24s with a global gate.
+  const WORKER_GAP = 1800
   const allSources: QualityMap[] = new Array(total)
   let fetchDone = 0
   let cursor = 0
-  let lastFetch = 0   // timestamp of last request start (ms)
-
-  const gatedFetch = async (episodeId: string): Promise<QualityMap> => {
-    const now = Date.now()
-    const wait = lastFetch + 1250 - now
-    if (wait > 0) await new Promise<void>(r => setTimeout(r, wait))
-    lastFetch = Date.now()
-    return getAnimepaheSources(episodeId, autoQuality ? order : undefined)
-  }
 
   await Promise.all(
-    Array.from({ length: Math.min(1, total) }, async () => {
+    Array.from({ length: Math.min(2, total) }, async () => {
+      let workerLastFetch = 0
       while (true) {
         const i = cursor++
         if (i >= total) break
-        allSources[i] = await gatedFetch(ids[i])
+        const wait = workerLastFetch + WORKER_GAP - Date.now()
+        if (wait > 0) await new Promise<void>(r => setTimeout(r, wait))
+        workerLastFetch = Date.now()
+        allSources[i] = await getAnimepaheSources(ids[i], autoQuality ? order : undefined)
         fetchDone++
         onProgress?.(fetchDone, total)
       }
