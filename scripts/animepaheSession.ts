@@ -840,13 +840,9 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
       })
     }
 
-    await preloadStoredCookies(controller, baseUrl)
-
-    // Fire navigation, give it a moment to start before the sheet opens.
-    // Awaiting loadURL fully resolves on about:blank in Scripting (loads after attach),
-    // so we use a short pause instead to let the real page begin loading.
-    void loadWebViewHome(controller, baseUrl)
-    await new Promise<void>(r => setTimeout(r, 600))
+    // Load the page fully before presenting — matches the working WebViewController example.
+    // loadWebViewHome clears cookies and awaits loadURL internally.
+    await loadWebViewHome(controller, baseUrl)
     await injectContinueButton(controller)
 
     await controller.present({
