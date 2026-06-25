@@ -403,17 +403,26 @@ export async function downloadEpisode(
   const escapedName = safeName.replace(/([^a-zA-Z0-9.\-_:=@])/g, '\\$1')
   const links: string[] = [`mkdir "${safeName}"`]
 
-  // Phase 1: fetch all episode sources in parallel (3 workers)
+  // Phase 1: fetch all episode sources in parallel (3 workers, 125ms global gap)
   const allSources: QualityMap[] = new Array(total)
   let fetchDone = 0
   let cursor = 0
+  let lastFetch = 0   // timestamp of last request start (ms)
+
+  const gatedFetch = async (episodeId: string): Promise<QualityMap> => {
+    const now = Date.now()
+    const wait = lastFetch + 125 - now
+    if (wait > 0) await new Promise<void>(r => setTimeout(r, wait))
+    lastFetch = Date.now()
+    return getAnimepaheSources(episodeId, autoQuality ? order : undefined)
+  }
 
   await Promise.all(
     Array.from({ length: Math.min(3, total) }, async () => {
       while (true) {
         const i = cursor++
         if (i >= total) break
-        allSources[i] = await getAnimepaheSources(ids[i], autoQuality ? order : undefined)
+        allSources[i] = await gatedFetch(ids[i])
         fetchDone++
         onProgress?.(fetchDone, total)
       }
