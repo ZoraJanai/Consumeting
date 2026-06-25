@@ -821,6 +821,7 @@ async function probeApi(baseUrl: string): Promise<boolean> {
 async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
   disposeWebViewController()
   const controller = new WebViewController()
+  controller.setCustomUserAgent(HARDWIRED_UA)
   webViewController = controller
   verificationController = controller
 
