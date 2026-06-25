@@ -411,7 +411,7 @@ export async function downloadEpisode(
 
   const gatedFetch = async (episodeId: string): Promise<QualityMap> => {
     const now = Date.now()
-    const wait = lastFetch + 1250 - now
+    const wait = lastFetch + 1800 - now
     if (wait > 0) await new Promise<void>(r => setTimeout(r, wait))
     lastFetch = Date.now()
     return getAnimepaheSources(episodeId, autoQuality ? order : undefined)
