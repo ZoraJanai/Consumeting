@@ -530,7 +530,7 @@ async function loadWebViewHome(controller: any, baseUrl: string): Promise<void> 
   const homeUrl = baseUrl + "/"
   //console.log("[animepaheSession] Loading WebView home:", homeUrl)
   try {
-    controller.setCustomUserAgen(HARDWIRED_UA)
+    controller.setCustomUserAgent(HARDWIRED_UA)
     const loaded = await controller.loadURL(homeUrl)
     if (loaded === false) {
       //console.log("[animepaheSession] loadURL returned false for", homeUrl)
@@ -817,7 +817,6 @@ async function probeApi(baseUrl: string): Promise<boolean> {
   return result.ok
 }
 
-
 async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
   disposeWebViewController()
   const controller = new WebViewController()
@@ -988,7 +987,7 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
   _kwikCapturing = true
   console.log("[kwikCF] navigating WebView to kwik.cx for CF session capture")
   try {
-    webViewController.setCustomUserAgen(HARDWIRED_UA)
+    webViewController.setCustomUserAgent(HARDWIRED_UA)
     await webViewController.loadURL("https://kwik.cx/") } catch { /* ignore */ }
 
   // Poll cookie jar until kwik.cx cf_clearance appears
@@ -1028,7 +1027,7 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
   const baseUrl = getBaseUrl()
   console.log("[kwikCF] navigating WebView back to animepahe.pw")
   try { 
-    webViewController.setCustomUserAgen(HARDWIRED_UA)
+    webViewController.setCustomUserAgent(HARDWIRED_UA)
     await webViewController.loadURL(baseUrl + "/") } catch { /* ignore */ }
   // Give the page time to settle before the next iframe injection
   await new Promise<void>(r => setTimeout(r, 3000))
