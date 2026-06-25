@@ -849,7 +849,7 @@ async function captureSessionFromWebView(baseUrl: string): Promise<boolean> {
     await injectContinueButton(controller)
 
     await controller.present({
-      fullscreen: true,
+      fullscreen: false,
       navigationTitle: "Verify site, then tap Continue",
     })
 
