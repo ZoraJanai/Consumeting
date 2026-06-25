@@ -184,34 +184,49 @@ function parseResolutionMenu(html: string): { kwikUrl: string; quality: string }
   return result
 }
 
-async function scrapePlayPageSources(episodeId: string): Promise<QualityMap> {
+async function scrapePlayPageSources(episodeId: string, qualityOrder?: string[]): Promise<QualityMap> {
   const html = await directFetchPlayPage(episodeId)
   const entries = parseResolutionMenu(html)
   const base = getDirectBaseUrl()
-  const dict: QualityMap = {}
 
+  // Build tag → kwikUrl map without hitting kwik yet
+  const kwikMap: Record<string, string> = {}
   for (const entry of entries) {
+    const parts = entry.quality.split(" · ")
+    const tag = "-" + (parts[1] ?? parts[0]).trim()
+    kwikMap[tag] = entry.kwikUrl
+  }
+
+  const tags = Object.keys(kwikMap)
+
+  // Pick which tag to extract — use quality order if provided, else fetch all
+  let tagsToFetch: string[]
+  if (qualityOrder && qualityOrder.length > 0) {
+    const chosen = qualityOrder.find(q => kwikMap[q]) ?? tags[0]
+    tagsToFetch = chosen ? [chosen] : tags
+    console.log("[getAnimepaheSources] pre-selected quality:", tagsToFetch[0])
+  } else {
+    tagsToFetch = tags
+  }
+
+  const dict: QualityMap = {}
+  for (const tag of tagsToFetch) {
     try {
-      const url = await extractKwikHlsUrl(entry.kwikUrl, base)
-      const parts = entry.quality.split(" · ")
-      const tag = "-" + (parts[1] ?? parts[0]).trim()
-      dict[tag] = url
+      dict[tag] = await extractKwikHlsUrl(kwikMap[tag], base)
     } catch (err) {
-      console.error(`[getAnimepaheSources] Failed quality ${entry.quality}:`, err)
+      console.error(`[getAnimepaheSources] Failed quality ${tag}:`, err)
     }
   }
 
   return dict
 }
 
-export async function getAnimepaheSources(episodeId: string): Promise<QualityMap> {
-  // console.log("[getAnimepaheSources] Fetching:", episodeId)
-
+export async function getAnimepaheSources(episodeId: string, qualityOrder?: string[]): Promise<QualityMap> {
   if (useApiMode()) {
     return paheFetchStreamingSourcesFromApi(episodeId)
   }
 
-  return scrapePlayPageSources(episodeId)
+  return scrapePlayPageSources(episodeId, qualityOrder)
 }
 
 // ---- Quality Selection ----
@@ -316,7 +331,7 @@ export async function getEpisode(
   const episodeId = entry.ids[index - 1]
   console.log("[getEpisode] episodeId:", episodeId)
 
-  const sources = await getAnimepaheSources(episodeId)
+  const sources = await getAnimepaheSources(episodeId, autoQuality ? order : undefined)
   console.log("[getEpisode] sources:", Object.keys(sources))
 
   const tags = Object.keys(sources)
@@ -388,11 +403,28 @@ export async function downloadEpisode(
   const escapedName = safeName.replace(/([^a-zA-Z0-9.\-_:=@])/g, '\\$1')
   const links: string[] = [`mkdir "${safeName}"`]
 
+  // Phase 1: fetch all episode sources in parallel (3 workers)
+  const allSources: QualityMap[] = new Array(total)
+  let fetchDone = 0
+  let cursor = 0
+
+  await Promise.all(
+    Array.from({ length: Math.min(3, total) }, async () => {
+      while (true) {
+        const i = cursor++
+        if (i >= total) break
+        allSources[i] = await getAnimepaheSources(ids[i], autoQuality ? order : undefined)
+        fetchDone++
+        onProgress?.(fetchDone, total)
+      }
+    })
+  )
+
+  // Phase 2: build links in order (quality selection is single-prompt, reused across episodes)
   let chosenTag: string | null = null
 
   for (let i = 0; i < total; i++) {
-    const episodeId = ids[i]
-    const sources = await getAnimepaheSources(episodeId)
+    const sources = allSources[i]
     const tags = Object.keys(sources)
 
     let url = qualityAutoSelect(sources, order)
@@ -402,20 +434,13 @@ export async function downloadEpisode(
         if (chosenTag) {
           url = sources[chosenTag]
         }
-
         if (!url) {
           if (!askQuality) throw new Error("askQuality callback not provided")
           chosenTag = await askQuality(tags)
-
           const filtered = order.filter(q => q !== chosenTag)
-          const newOrder = [
-            ...filtered.slice(0, 2),
-            chosenTag,
-            ...filtered.slice(2),
-          ]
+          const newOrder = [...filtered.slice(0, 2), chosenTag, ...filtered.slice(2)]
           saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
           order = newOrder
-
           url = sources[chosenTag]
         }
       } else {
@@ -428,8 +453,6 @@ export async function downloadEpisode(
     const number = Number(entry.episode) + i
     links.push(`python3 hls_fix.py "${url}"`)
     links.push(`ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`)
-
-    onProgress?.(i + 1, total)
   }
 
   const episodeString =
