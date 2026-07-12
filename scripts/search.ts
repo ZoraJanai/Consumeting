@@ -475,14 +475,21 @@ function getAllAnimeMode(): AllAnimeMode {
 
 export const searchAllAnime = async (query: string): Promise<Anime[]> => {
   const mode = getAllAnimeMode()
-  const results = await allAnimeSearch(query, mode)
-  return results.map(r => ({
-    name:      r.title,
-    source:    `allanime:${r.id}`,   // prefix so Cache can distinguish
-    episodes:  String(r.episodeCount),
-    img:       r.img,
-    isUnread:  false,
-  }))
+  console.log("[searchAllAnime] query:", query, "mode:", mode)
+  try {
+    const results = await allAnimeSearch(query, mode)
+    console.log("[searchAllAnime] got", results.length, "results")
+    return results.map(r => ({
+      name:      r.title,
+      source:    `allanime:${r.id}`,
+      episodes:  String(r.episodeCount),
+      img:       r.img,
+      isUnread:  false,
+    }))
+  } catch (err) {
+    console.error("[searchAllAnime] ERROR:", err)
+    throw err
+  }
 }
 
 export const getInfoAllAnime = async (anime: Anime): Promise<BaseInfo> => {

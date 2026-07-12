@@ -65,24 +65,52 @@ function deobfuscate(encoded: string): string {
 
 // ── Core API helper ───────────────────────────────────────────────────────────
 async function apiPost(query: string, variables: Record<string, any>): Promise<any> {
-  const resp = await fetch(API, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Referer":      REFERER,
-      "User-Agent":   UA,
-      "Origin":       REFERER,
-    },
-    body: JSON.stringify({ query, variables }),
-  })
-  if (!resp.ok) throw new Error(`[AllAnime] HTTP ${resp.status}`)
+  const opName = query.trim().slice(0, 40)
+  console.log("[AllAnime] POST", opName, JSON.stringify(variables).slice(0, 120))
 
-  const json = await resp.json()
-  const raw  = JSON.stringify(json)
+  let resp: Response
+  try {
+    resp = await fetch(API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Referer":      REFERER,
+        "User-Agent":   UA,
+        "Origin":       REFERER,
+      },
+      body: JSON.stringify({ query, variables }),
+    })
+  } catch (err) {
+    console.error("[AllAnime] fetch threw:", err)
+    throw err
+  }
+
+  console.log("[AllAnime] status:", resp.status)
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "")
+    console.error("[AllAnime] error body:", body.slice(0, 300))
+    throw new Error(`[AllAnime] HTTP ${resp.status}`)
+  }
+
+  let json: any
+  try {
+    json = await resp.json()
+  } catch (err) {
+    console.error("[AllAnime] JSON parse error:", err)
+    throw err
+  }
+
+  const raw = JSON.stringify(json)
+  console.log("[AllAnime] raw response (first 200):", raw.slice(0, 200))
 
   if (raw.includes('"tobeparsed"')) {
+    console.log("[AllAnime] response is encrypted — decrypting")
     const m = raw.match(/"tobeparsed":"([^"]*)"/)
-    if (m) return decryptTobeparsed(m[1])
+    if (m) {
+      const decrypted = await decryptTobeparsed(m[1])
+      console.log("[AllAnime] decrypted (first 200):", JSON.stringify(decrypted).slice(0, 200))
+      return decrypted
+    }
   }
   return json
 }
@@ -109,6 +137,7 @@ export async function allAnimeSearch(
   query: string,
   mode: AllAnimeMode = "sub"
 ): Promise<AllAnimeResult[]> {
+  console.log("[AllAnime] search:", query, "mode:", mode)
   const data = await apiPost(SEARCH_GQL, {
     search:          { allowAdult: false, allowUnknown: false, query },
     limit:           40,
@@ -117,10 +146,15 @@ export async function allAnimeSearch(
     countryOrigin:   "ALL",
   })
 
+  console.log("[AllAnime] search data keys:", Object.keys(data ?? {}))
+
   const edges: any[] =
     data?.data?.shows?.edges ??
     data?.shows?.edges ??
     []
+
+  console.log("[AllAnime] edges count:", edges.length)
+  if (edges.length > 0) console.log("[AllAnime] first edge:", JSON.stringify(edges[0]).slice(0, 150))
 
   return edges.map(e => ({
     id:           String(e._id),
