@@ -482,7 +482,7 @@ export const searchAllAnime = async (query: string): Promise<Anime[]> => {
     return results.map(r => ({
       name:      r.title,
       source:    `allanime:${r.id}`,
-      episodes:  String(r.episodeCount),
+      episodes:  "0",
       img:       r.img,
       isUnread:  false,
     }))
@@ -493,23 +493,31 @@ export const searchAllAnime = async (query: string): Promise<Anime[]> => {
 }
 
 export const getInfoAllAnime = async (anime: Anime): Promise<BaseInfo> => {
-  // source is "allanime:{showId}"
   const showId = anime.source.startsWith("allanime:")
     ? anime.source.slice("allanime:".length)
     : anime.source
 
   const mode = getAllAnimeMode()
-  const epNums = await allAnimeGetEpisodes(showId, mode)
+  console.log("[getInfoAllAnime] showId:", showId, "name:", anime.name, "mode:", mode)
 
-  const ids = epNums.map(n => encodeAllAnimeId(showId, n, mode))
+  try {
+    const epNums = await allAnimeGetEpisodes(showId, mode)
+    console.log("[getInfoAllAnime] epNums count:", epNums.length)
 
-  return {
-    total:   String(ids.length),
-    ids,
-    name:    anime.name,
-    id:      showId,
-    episode: "none",
-    img:     anime.img,
+    const ids = epNums.map(n => encodeAllAnimeId(showId, n, mode))
+    console.log("[getInfoAllAnime] first id:", ids[0], "last id:", ids[ids.length - 1])
+
+    return {
+      total:   String(ids.length),
+      ids,
+      name:    anime.name,
+      id:      showId,
+      episode: "none",
+      img:     anime.img,
+    }
+  } catch (err) {
+    console.error("[getInfoAllAnime] ERROR:", err)
+    throw err
   }
 }
 

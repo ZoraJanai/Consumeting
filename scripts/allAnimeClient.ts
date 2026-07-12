@@ -169,14 +169,20 @@ export async function allAnimeGetEpisodes(
   showId: string,
   mode:   AllAnimeMode = "sub"
 ): Promise<string[]> {
+  console.log("[AllAnime] getEpisodes showId:", showId, "mode:", mode)
   const data = await apiPost(EPISODES_GQL, { showId })
+
+  console.log("[AllAnime] getEpisodes data keys:", Object.keys(data ?? {}))
   const detail =
     data?.data?.show?.availableEpisodesDetail ??
     data?.show?.availableEpisodesDetail ??
     {}
+  console.log("[AllAnime] availableEpisodesDetail:", JSON.stringify(detail).slice(0, 200))
+
   const list: string[] = detail[mode] ?? []
-  // Sort numerically (API may return out of order)
-  return list.slice().sort((a, b) => parseFloat(a) - parseFloat(b))
+  const sorted = list.slice().sort((a, b) => parseFloat(a) - parseFloat(b))
+  console.log("[AllAnime] episodes count:", sorted.length, "first few:", sorted.slice(0, 5))
+  return sorted
 }
 
 // ── Stream URL ────────────────────────────────────────────────────────────────
@@ -188,13 +194,16 @@ export async function allAnimeGetStreamUrl(
   episodeNum: string,
   mode:       AllAnimeMode = "sub"
 ): Promise<string | null> {
+  console.log("[AllAnime] getStreamUrl showId:", showId, "ep:", episodeNum, "mode:", mode)
   const data = await apiPost(STREAM_GQL, {
     showId,
     translationType: mode,
     episodeString:   episodeNum,
   })
 
-  const raw = JSON.stringify(data?.data?.episode ?? data?.episode ?? data)
+  const epData = data?.data?.episode ?? data?.episode ?? data
+  const raw = JSON.stringify(epData)
+  console.log("[AllAnime] episode raw (first 300):", raw.slice(0, 300))
 
   // Extract all {sourceUrl, sourceName} pairs
   type Src = { url: string; name: string }
@@ -205,6 +214,8 @@ export async function allAnimeGetStreamUrl(
       name: m[2],
     })
   }
+
+  console.log("[AllAnime] sources found:", sources.map(s => s.name))
 
   if (sources.length === 0) {
     console.log("[AllAnime] no sources for", showId, episodeNum)
@@ -218,36 +229,56 @@ export async function allAnimeGetStreamUrl(
     if (chosen) break
   }
   chosen = chosen ?? sources[0]
+  console.log("[AllAnime] chosen provider:", chosen.name, "url:", chosen.url.slice(0, 80))
 
   let path = chosen.url
   if (path.startsWith("--")) {
     path = deobfuscate(path).replace("/clock", "/clock.json")
+    console.log("[AllAnime] deobfuscated path:", path.slice(0, 80))
   }
 
   // Fetch actual stream endpoint
-  const streamResp = await fetch(BASE + path, {
+  const streamUrl = BASE + path
+  console.log("[AllAnime] fetching stream endpoint:", streamUrl.slice(0, 120))
+  const streamResp = await fetch(streamUrl, {
     headers: { "Referer": REFERER, "User-Agent": UA },
   })
+  console.log("[AllAnime] stream endpoint status:", streamResp.status)
   if (!streamResp.ok) {
-    console.log("[AllAnime] stream endpoint failed:", streamResp.status, path)
+    const body = await streamResp.text().catch(() => "")
+    console.error("[AllAnime] stream endpoint error body:", body.slice(0, 200))
     return null
   }
 
   const sJson = JSON.stringify(await streamResp.json())
+  console.log("[AllAnime] stream response (first 300):", sJson.slice(0, 300))
 
   // wixmp: "link":"url","resolutionStr":"1080p"
   const byRes = [...sJson.matchAll(/"link":"([^"]*)"[^}]*"resolutionStr":"([^"]*)"/g)]
     .map(m => ({ url: m[1].replace(/\\u002F/g, "/"), res: parseInt(m[2]) || 0 }))
     .sort((a, b) => b.res - a.res)
-  if (byRes.length > 0) return byRes[0].url
+  if (byRes.length > 0) {
+    console.log("[AllAnime] wixmp qualities:", byRes.map(r => r.res + "p"), "→ using", byRes[0].res + "p")
+    return byRes[0].url
+  }
 
-  // m3u8_refr pattern (master.m3u8 with referer)
+  // m3u8_refr pattern
   const masterM3u8 = sJson.match(/"hls","url":"([^"]*)"[^}]*"hardsub_lang":"en-US"/)
-  if (masterM3u8) return masterM3u8[1].replace(/\\u002F/g, "/")
+  if (masterM3u8) {
+    const url = masterM3u8[1].replace(/\\u002F/g, "/")
+    console.log("[AllAnime] hls master m3u8:", url.slice(0, 100))
+    return url
+  }
 
   // Fallback: any m3u8 URL in response
   const anyM3u8 = sJson.match(/"(https?:\/\/[^"]+\.m3u8[^"]*)"/)
-  return anyM3u8 ? anyM3u8[1] : null
+  if (anyM3u8) {
+    console.log("[AllAnime] fallback m3u8:", anyM3u8[1].slice(0, 100))
+    return anyM3u8[1]
+  }
+
+  console.log("[AllAnime] no m3u8 found in stream response")
+  return null
 }
 
 // ── Episode ID helpers ────────────────────────────────────────────────────────
