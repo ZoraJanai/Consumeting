@@ -511,7 +511,7 @@ export const getInfoAllAnime = async (anime: Anime): Promise<BaseInfo> => {
       total:   String(ids.length),
       ids,
       name:    anime.name,
-      id:      showId,
+      id:      `allanime: ${showId}`,
       episode: "none",
       img:     anime.img,
     }
