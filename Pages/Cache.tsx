@@ -4,7 +4,7 @@ import {
 } from "scripting"
 
 import { NumberInputSheet } from "./numberPopout"
-import { getInfoAnilist, getInfoAnimepahe } from "../scripts/search"
+import { getInfoAnilist, getInfoAnimepahe, getInfoAllAnime } from "../scripts/search"
 import { normalizePaheUrl } from "../scripts/animepaheClient"
 import { downloadEpisode, episodeNumber, getEpisode, queueEpisodeRange, QualitiesOrder } from "../scripts/episode"
 import { getCache, getQueue, saveCache, saveQueue, addCache, addQueue } from "../scripts/cache"
@@ -69,7 +69,9 @@ function saveSetting(key: string, value: any) {
 
 export async function chosenAnime(anime: Anime) {
   let info
-  if (anime.source.includes("-")) {
+  if (anime.source.startsWith("allanime:")) {
+    info = await getInfoAllAnime(anime)
+  } else if (anime.source.includes("-")) {
     info = await getInfoAnimepahe(anime)
   } else {
     info = await getInfoAnilist(anime)

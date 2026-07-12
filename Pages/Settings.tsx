@@ -10,7 +10,8 @@ import {
 } from "../scripts/animepaheSession"
 
 type VideoPlayerType = "nPlayer" | "Outplayer"
-type ProviderType = "Anilist" | "Animepahe"
+type ProviderType = "Anilist" | "Animepahe" | "AllAnime"
+type AllAnimeModeType = "sub" | "dub"
 
 import { STORAGE_KEYS, loadSetting, saveSetting } from "../scripts/storage"
 
@@ -132,6 +133,9 @@ export function SettingsPage() {
   const [rustProxyUrl, setRustProxyUrl] = useState(
     loadSetting(STORAGE_KEYS.RUST_PROXY_URL, "https://rust-proxy-hvm4.onrender.com")
   )
+  const [allAnimeMode, setAllAnimeMode] = useState<AllAnimeModeType>(
+    loadSetting(STORAGE_KEYS.ALLANIME_MODE, "sub")
+  )
 
   function handleVideoPlayerChange(player: any) {
     setVideoPlayer(player)
@@ -141,6 +145,11 @@ export function SettingsPage() {
   function handleProviderChange(provider: any) {
     setProvider(provider)
     saveSetting(STORAGE_KEYS.PROVIDER, provider)
+  }
+
+  function handleAllAnimeModeChange(mode: any) {
+    setAllAnimeMode(mode)
+    saveSetting(STORAGE_KEYS.ALLANIME_MODE, mode)
   }
 
   function handleAutoQualityChange(enabled: boolean) {
@@ -224,19 +233,33 @@ export function SettingsPage() {
           </HStack>
         </Section>
 
-        <Section header={<Text>Provider</Text>}>
+        <Section header={<Text>Source</Text>}>
           <HStack>
-            <Text>Provider                      </Text>
+            <Text>Source                        </Text>
             <Picker
-              title={"Primary Provider:"}
+              title={"Anime Source:"}
               pickerStyle={"palette"}
               value={Provider}
               onChanged={handleProviderChange}
             >
-              {/* <Text tag={"Anilist"}>Anilist</Text> */}
               <Text tag={"Animepahe"}>Animepahe</Text>
+              <Text tag={"AllAnime"}>AllAnime</Text>
             </Picker>
           </HStack>
+          {Provider === "AllAnime" && (
+            <HStack>
+              <Text>Language                     </Text>
+              <Picker
+                title={"Sub / Dub:"}
+                pickerStyle={"palette"}
+                value={allAnimeMode}
+                onChanged={handleAllAnimeModeChange}
+              >
+                <Text tag={"sub"}>Sub</Text>
+                <Text tag={"dub"}>Dub</Text>
+              </Picker>
+            </HStack>
+          )}
         </Section>
 
         <Section header={<Text>URLs</Text>}>

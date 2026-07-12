@@ -7,6 +7,13 @@ import {
   paheSearch,
 } from "./animepaheClient"
 import { normalizePaheUrl } from "./animepaheSession"
+import {
+  allAnimeSearch,
+  allAnimeGetEpisodes,
+  encodeAllAnimeId,
+  type AllAnimeMode,
+} from "./allAnimeClient"
+import { loadSetting, STORAGE_KEYS } from "./storage"
 
 // Type definitions
 type Anime = {
@@ -456,6 +463,46 @@ const getInfoAnimepahe = async (anime: Anime): Promise<BaseInfo> => {
   } catch (error) {
     console.error('[getInfoAnimepahe] ERROR:', error)
     throw error
+  }
+}
+
+// ===== ALLANIME SOURCE =====
+
+/** Returns the user's preferred AllAnime mode ("sub" | "dub"). */
+function getAllAnimeMode(): AllAnimeMode {
+  return loadSetting<string>(STORAGE_KEYS.ALLANIME_MODE, "sub") === "dub" ? "dub" : "sub"
+}
+
+export const searchAllAnime = async (query: string): Promise<Anime[]> => {
+  const mode = getAllAnimeMode()
+  const results = await allAnimeSearch(query, mode)
+  return results.map(r => ({
+    name:      r.title,
+    source:    `allanime:${r.id}`,   // prefix so Cache can distinguish
+    episodes:  String(r.episodeCount),
+    img:       r.img,
+    isUnread:  false,
+  }))
+}
+
+export const getInfoAllAnime = async (anime: Anime): Promise<BaseInfo> => {
+  // source is "allanime:{showId}"
+  const showId = anime.source.startsWith("allanime:")
+    ? anime.source.slice("allanime:".length)
+    : anime.source
+
+  const mode = getAllAnimeMode()
+  const epNums = await allAnimeGetEpisodes(showId, mode)
+
+  const ids = epNums.map(n => encodeAllAnimeId(showId, n, mode))
+
+  return {
+    total:   String(ids.length),
+    ids,
+    name:    anime.name,
+    id:      showId,
+    episode: "none",
+    img:     anime.img,
   }
 }
 

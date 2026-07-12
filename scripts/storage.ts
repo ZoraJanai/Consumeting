@@ -12,6 +12,9 @@ export const STORAGE_KEYS = {
   KWIK_COOKIES: "settings.kwikCookies",
   KWIK_USER_AGENT: "settings.kwikUserAgent",
   RUST_PROXY_URL: "settings.rustProxyUrl",
+  // "animepahe" | "allanime"
+  ANIME_SOURCE: "settings.animeSource",
+  ALLANIME_MODE: "settings.allAnimeMode",   // "sub" | "dub"
 }
 
 export function loadSetting<T>(key: string, defaultValue: T): T {

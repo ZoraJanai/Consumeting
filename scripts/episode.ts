@@ -16,6 +16,11 @@ import {
   isWebViewSessionActive,
   paheHeaders,
 } from "./animepaheSession"
+import {
+  allAnimeGetStreamUrl,
+  decodeAllAnimeId,
+  isAllAnimeId,
+} from "./allAnimeClient"
 
 // ---- Types ----
 
@@ -331,37 +336,52 @@ export async function getEpisode(
   const episodeId = entry.ids[index - 1]
   console.log("[getEpisode] episodeId:", episodeId)
 
-  const sources = await getAnimepaheSources(episodeId, autoQuality ? order : undefined)
-  console.log("[getEpisode] sources:", Object.keys(sources))
+  let openUrl: string | undefined
 
-  const tags = Object.keys(sources)
-  let selectedUrl: string | undefined
+  if (isAllAnimeId(episodeId)) {
+    // ── AllAnime source ───────────────────────────────────────────────────────
+    const decoded = decodeAllAnimeId(episodeId)
+    if (!decoded) throw new Error("[getEpisode] invalid AllAnime ID: " + episodeId)
+    const url = await allAnimeGetStreamUrl(decoded.showId, decoded.epNum, decoded.mode)
+    if (!url) throw new Error("[getEpisode] AllAnime returned no stream URL")
+    openUrl = url
+    console.log("[getEpisode] AllAnime m3u8:", openUrl.substring(0, 100))
+  } else {
+    // ── Animepahe source ──────────────────────────────────────────────────────
+    const sources = await getAnimepaheSources(episodeId, autoQuality ? order : undefined)
+    console.log("[getEpisode] sources:", Object.keys(sources))
 
-  if (autoQuality) {
-    selectedUrl = qualityAutoSelect(sources, order)
-    if (!selectedUrl) {
+    const tags = Object.keys(sources)
+    let selectedUrl: string | undefined
+
+    if (autoQuality) {
+      selectedUrl = qualityAutoSelect(sources, order)
+      if (!selectedUrl) {
+        if (!askQuality) throw new Error("askQuality callback not provided")
+        const pickedTag = await askQuality(tags)
+        const filtered = order.filter(q => q !== pickedTag)
+        const newOrder = [
+          ...filtered.slice(0, 2),
+          pickedTag,
+          ...filtered.slice(2)
+        ]
+        saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
+        order = newOrder
+        selectedUrl = sources[pickedTag]
+      }
+    } else {
       if (!askQuality) throw new Error("askQuality callback not provided")
       const pickedTag = await askQuality(tags)
-      const filtered = order.filter(q => q !== pickedTag)
-      const newOrder = [
-        ...filtered.slice(0, 2),
-        pickedTag,
-        ...filtered.slice(2)
-      ]
-      saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
-      order = newOrder
       selectedUrl = sources[pickedTag]
     }
-  } else {
-    if (!askQuality) throw new Error("askQuality callback not provided")
-    const pickedTag = await askQuality(tags)
-    selectedUrl = sources[pickedTag]
+
+    openUrl = selectedUrl
+    console.log("[getEpisode] m3u8:", openUrl?.substring(0, 100))
   }
 
   hideOverlay()
 
-  const openUrl = selectedUrl
-  console.log("[getEpisode] m3u8:", openUrl.substring(0, 100))
+  console.log("[getEpisode] opening:", openUrl?.substring(0, 100))
 
   const finalUrl = player === "nPlayer" ? "-" + openUrl : "://" + openUrl
   console.log("[getEpisode] opening:", (player + finalUrl).substring(0, 100))
@@ -403,65 +423,98 @@ export async function downloadEpisode(
   const escapedName = safeName.replace(/([^a-zA-Z0-9.\-_:=@])/g, '\\$1')
   const links: string[] = [`mkdir "${safeName}"`]
 
-  // Phase 1: fetch all episode sources in parallel (3 workers, 125ms global gap)
-  const allSources: QualityMap[] = new Array(total)
-  let fetchDone = 0
-  let cursor = 0
-  let lastFetch = 0   // timestamp of last request start (ms)
+  // Detect source type from first episode ID
+  const firstId = ids[0] ?? ""
+  const useAllAnime = isAllAnimeId(firstId)
 
-  const gatedFetch = async (episodeId: string): Promise<QualityMap> => {
-    const now = Date.now()
-    const wait = lastFetch + 1800 - now
-    if (wait > 0) await new Promise<void>(r => setTimeout(r, wait))
-    lastFetch = Date.now()
-    return getAnimepaheSources(episodeId, autoQuality ? order : undefined)
-  }
+  if (useAllAnime) {
+    // ── AllAnime: no Cloudflare, fetch directly, plain ffmpeg ─────────────────
+    // 2500ms gap to be polite to api.allanime.day
+    let lastFetch = 0
 
-  await Promise.all(
-    Array.from({ length: Math.min(1, total) }, async () => {
-      while (true) {
-        const i = cursor++
-        if (i >= total) break
-        allSources[i] = await gatedFetch(ids[i])
-        fetchDone++
-        onProgress?.(fetchDone, total)
+    for (let i = 0; i < total; i++) {
+      const now = Date.now()
+      const wait = lastFetch + 2500 - now
+      if (wait > 0) await new Promise<void>(r => setTimeout(r, wait))
+      lastFetch = Date.now()
+
+      const decoded = decodeAllAnimeId(ids[i])
+      if (!decoded) continue
+
+      const url = await allAnimeGetStreamUrl(decoded.showId, decoded.epNum, decoded.mode)
+      if (!url) {
+        console.error("[download] AllAnime returned no URL for", ids[i])
+        continue
       }
-    })
-  )
 
-  // Phase 2: build links in order (quality selection is single-prompt, reused across episodes)
-  let chosenTag: string | null = null
+      const number = Number(entry.episode) + i
+      links.push(
+        `ffmpeg -i "${url}" -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`
+      )
 
-  for (let i = 0; i < total; i++) {
-    const sources = allSources[i]
-    const tags = Object.keys(sources)
+      onProgress?.(i + 1, total)
+    }
+  } else {
+    // ── Animepahe: kwik.cx, rate-limited, needs hls_fix.py ───────────────────
+    const allSources: QualityMap[] = new Array(total)
+    let fetchDone = 0
+    let cursor = 0
+    let lastFetch = 0   // timestamp of last request start (ms)
 
-    let url = qualityAutoSelect(sources, order)
-
-    if (!url) {
-      if (autoQuality) {
-        if (chosenTag) {
-          url = sources[chosenTag]
-        }
-        if (!url) {
-          if (!askQuality) throw new Error("askQuality callback not provided")
-          chosenTag = await askQuality(tags)
-          const filtered = order.filter(q => q !== chosenTag)
-          const newOrder = [...filtered.slice(0, 2), chosenTag, ...filtered.slice(2)]
-          saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
-          order = newOrder
-          url = sources[chosenTag]
-        }
-      } else {
-        if (!askQuality) throw new Error("askQuality callback not provided")
-        chosenTag = await askQuality(tags)
-        url = sources[chosenTag]
-      }
+    const gatedFetch = async (episodeId: string): Promise<QualityMap> => {
+      const now = Date.now()
+      const wait = lastFetch + 1800 - now
+      if (wait > 0) await new Promise<void>(r => setTimeout(r, wait))
+      lastFetch = Date.now()
+      return getAnimepaheSources(episodeId, autoQuality ? order : undefined)
     }
 
-    const number = Number(entry.episode) + i
-    links.push(`python3 hls_fix.py "${url}"`)
-    links.push(`ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`)
+    await Promise.all(
+      Array.from({ length: Math.min(1, total) }, async () => {
+        while (true) {
+          const i = cursor++
+          if (i >= total) break
+          allSources[i] = await gatedFetch(ids[i])
+          fetchDone++
+          onProgress?.(fetchDone, total)
+        }
+      })
+    )
+
+    // Phase 2: build links in order (quality selection is single-prompt, reused across episodes)
+    let chosenTag: string | null = null
+
+    for (let i = 0; i < total; i++) {
+      const sources = allSources[i]
+      const tags = Object.keys(sources)
+
+      let url = qualityAutoSelect(sources, order)
+
+      if (!url) {
+        if (autoQuality) {
+          if (chosenTag) {
+            url = sources[chosenTag]
+          }
+          if (!url) {
+            if (!askQuality) throw new Error("askQuality callback not provided")
+            chosenTag = await askQuality(tags)
+            const filtered = order.filter(q => q !== chosenTag)
+            const newOrder = [...filtered.slice(0, 2), chosenTag, ...filtered.slice(2)]
+            saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
+            order = newOrder
+            url = sources[chosenTag]
+          }
+        } else {
+          if (!askQuality) throw new Error("askQuality callback not provided")
+          chosenTag = await askQuality(tags)
+          url = sources[chosenTag]
+        }
+      }
+
+      const number = Number(entry.episode) + i
+      links.push(`python3 hls_fix.py "${url}"`)
+      links.push(`ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`)
+    }
   }
 
   const episodeString =

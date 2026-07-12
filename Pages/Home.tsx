@@ -3,7 +3,7 @@ import {
   VStack, useEffect, useState
 } from "scripting"
 import { AnimeCell, chosenAnime } from "./Cache"
-import { enhanceAnimepaheResultsWithExternalImages, searchAnilist, searchAnimepahe } from "../scripts/search"
+import { enhanceAnimepaheResultsWithExternalImages, searchAnilist, searchAnimepahe, searchAllAnime } from "../scripts/search"
 import { NumberInputSheet } from "./numberPopout"
 import { STORAGE_KEYS, loadSetting, saveSetting } from "./Settings"
 import { QualitiesOrder, downloadEpisode, episodeNumber, getEpisode } from "../scripts/episode"
@@ -37,7 +37,7 @@ export type DownloadAnimeType = {
   isUnread: boolean
 }
 
-type ProviderType = 'Anilist' | 'Animepahe'
+type ProviderType = 'Anilist' | 'Animepahe' | 'AllAnime'
 
 const PlaceholderAnime: Anime = {
   name: "Name of Anime",
@@ -213,9 +213,14 @@ export function HomePage({ onCacheSaved,onQueueSaved }: { onCacheSaved?: () => v
 
     const handle = setTimeout(async () => {
       try {
-        const raw = provider === "Anilist"
-          ? await searchAnilist(q.toLowerCase())
-          : await searchAnimepahe(q.toLowerCase())
+        let raw: Anime[] | string
+        if (provider === "Anilist") {
+          raw = await searchAnilist(q.toLowerCase())
+        } else if (provider === "AllAnime") {
+          raw = await searchAllAnime(q)
+        } else {
+          raw = await searchAnimepahe(q.toLowerCase())
+        }
 
         if (cancelled) return
         const baseResults = typeof raw === "string" ? [] : (raw as Anime[])
