@@ -460,6 +460,7 @@ function cleanupAfterQualityCancel() {
                 >
                   {/* <Text tag={"Anilist"}>Anilist</Text> */}
                   <Text tag={"Animepahe"}>Animepahe</Text>
+                  <Text tag={"AllAnime"}>AllAnime</Text>
                 </Picker>
               </HStack>
             }>
