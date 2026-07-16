@@ -552,8 +552,13 @@ function buildHlsDownloadCommands(
   const referer = kwikReferer.includes("kwik.cx/e/")
     ? kwikReferer
     : kwikReferer || "https://kwik.cx/"
+  const workers = Math.max(1, Number(loadSetting(STORAGE_KEYS.HLS_WORKERS, 3)) || 3)
+  const spm = Math.max(
+    1,
+    Number(loadSetting(STORAGE_KEYS.HLS_SEGMENTS_PER_MINUTE, 540)) || 540,
+  )
   return [
-    `python3 hls_fix.py ${ashellArg(m3u8Url)} --referer ${ashellArg(referer)} --session-file kwik_session.json --workers 3 --segments-per-minute 540`,
+    `python3 hls_fix.py ${ashellArg(m3u8Url)} --referer ${ashellArg(referer)} --session-file kwik_session.json --workers ${workers} --segments-per-minute ${spm}`,
     `ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${episodeNumber}.mp4`,
   ]
 }

@@ -125,12 +125,12 @@ export function SettingsPage() {
   const [animepaheBaseUrl, setAnimepaheBaseUrl] = useState(
     loadSetting(STORAGE_KEYS.ANIMEPAHE_BASE_URL, "https://animepahe.pw")
   )
-  const [animepaheApiUrl, setAnimepaheApiUrl] = useState(
-    loadSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, "")
-  )
   const [sessionActive, setSessionActive] = useState(isSessionReady())
-  const [rustProxyUrl, setRustProxyUrl] = useState(
-    loadSetting(STORAGE_KEYS.RUST_PROXY_URL, "https://rust-proxy-hvm4.onrender.com")
+  const [hlsWorkers, setHlsWorkers] = useState(
+    Number(loadSetting(STORAGE_KEYS.HLS_WORKERS, 3)) || 3
+  )
+  const [hlsSegmentsPerMinute, setHlsSegmentsPerMinute] = useState(
+    Number(loadSetting(STORAGE_KEYS.HLS_SEGMENTS_PER_MINUTE, 540)) || 540
   )
 
   function handleVideoPlayerChange(player: any) {
@@ -161,19 +161,6 @@ export function SettingsPage() {
     }
   }
 
-  async function editAnimepaheApiUrl() {
-    const input = await Dialog.prompt({
-      title: "Animepahe API URL (optional)",
-      message: "Leave empty for direct scraping. Set only if you use a hosted animepahe-api instance.",
-      value: animepaheApiUrl
-    })
-    if (input != null) {
-      const newUrl = input.trim().replace(/\/$/, "")
-      setAnimepaheApiUrl(newUrl)
-      saveSetting(STORAGE_KEYS.ANIMEPAHE_API_URL, newUrl)
-    }
-  }
-
   async function verifyAnimepahe() {
     const ok = await refreshAnimepaheSession()
     setSessionActive(ok || isSessionReady())
@@ -184,17 +171,28 @@ export function SettingsPage() {
     setSessionActive(false)
   }
 
-  async function editRustProxyUrl() {
+  async function editHlsWorkers() {
     const input = await Dialog.prompt({
-      title: "Rust Proxy URL",
-      message: "Enter the Rust proxy base URL",
-      value: rustProxyUrl
+      title: "HLS workers",
+      message: "Parallel segment downloads (default 3)",
+      value: String(hlsWorkers),
     })
-    if (input && input.trim()) {
-      const newUrl = input.trim()
-      setRustProxyUrl(newUrl)
-      saveSetting(STORAGE_KEYS.RUST_PROXY_URL, newUrl)
-    }
+    if (input == null) return
+    const n = Math.max(1, Math.min(16, parseInt(String(input).trim(), 10) || 3))
+    setHlsWorkers(n)
+    saveSetting(STORAGE_KEYS.HLS_WORKERS, n)
+  }
+
+  async function editHlsSegmentsPerMinute() {
+    const input = await Dialog.prompt({
+      title: "Segments per minute",
+      message: "Rate limit for HLS segment fetches (default 540)",
+      value: String(hlsSegmentsPerMinute),
+    })
+    if (input == null) return
+    const n = Math.max(1, Math.min(5000, parseInt(String(input).trim(), 10) || 540))
+    setHlsSegmentsPerMinute(n)
+    saveSetting(STORAGE_KEYS.HLS_SEGMENTS_PER_MINUTE, n)
   }
 
   return (
@@ -225,6 +223,17 @@ export function SettingsPage() {
           </HStack>
         </Section>
 
+        <Section header={<Text>Download (a-Shell)</Text>}>
+          <Button
+            title={`Workers: ${hlsWorkers}`}
+            action={editHlsWorkers}
+          />
+          <Button
+            title={`Segments / min: ${hlsSegmentsPerMinute}`}
+            action={editHlsSegmentsPerMinute}
+          />
+        </Section>
+
         <Section header={<Text>Provider</Text>}>
           <HStack>
             <Text>Provider                      </Text>
@@ -240,9 +249,9 @@ export function SettingsPage() {
           </HStack>
         </Section>
 
-        <Section header={<Text>URLs</Text>}>
+        <Section header={<Text>Animepahe</Text>}>
           <Button
-            title={`Animepahe: ${animepaheBaseUrl}`}
+            title={`Base URL: ${animepaheBaseUrl}`}
             action={editAnimepaheBaseUrl}
           />
           <Button
@@ -253,14 +262,6 @@ export function SettingsPage() {
             title="Clear Animepahe session"
             role="destructive"
             action={clearAnimepaheSession}
-          />
-          <Button
-            title={animepaheApiUrl ? `API: ${animepaheApiUrl}` : "API: off (direct scrape)"}
-            action={editAnimepaheApiUrl}
-          />
-          <Button
-            title={`Proxy: ${rustProxyUrl}`}
-            action={editRustProxyUrl}
           />
         </Section>
       </List>

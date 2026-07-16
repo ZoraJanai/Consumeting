@@ -102,6 +102,8 @@ const DEFAULTS = {
     "-default","-auto","-480p","-360p"
   ],
   [STORAGE_KEYS.PROVIDER]: "Anilist",
+  [STORAGE_KEYS.HLS_WORKERS]: 3,
+  [STORAGE_KEYS.HLS_SEGMENTS_PER_MINUTE]: 540,
 }
 
 async function ensureUnifiedFile() {

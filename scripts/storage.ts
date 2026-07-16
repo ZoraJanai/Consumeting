@@ -12,6 +12,8 @@ export const STORAGE_KEYS = {
   KWIK_COOKIES: "settings.kwikCookies",
   KWIK_USER_AGENT: "settings.kwikUserAgent",
   RUST_PROXY_URL: "settings.rustProxyUrl",
+  HLS_WORKERS: "settings.hlsWorkers",
+  HLS_SEGMENTS_PER_MINUTE: "settings.hlsSegmentsPerMinute",
 }
 
 export function loadSetting<T>(key: string, defaultValue: T): T {
