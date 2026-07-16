@@ -345,7 +345,10 @@ export async function getEpisode(
   const entry = loadSetting("entry", PlaceholderEntry)
   const autoQuality = loadSetting(STORAGE_KEYS.AUTO_QUALITY, true)
   let order = loadSetting(STORAGE_KEYS.QUALITY_ORDER, QualitiesOrder)
-  const player = loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
+  const player = loadSetting<"nPlayer" | "Outplayer" | "Safari">(
+    STORAGE_KEYS.VIDEO_PLAYER,
+    "nPlayer",
+  )
 
   const episodeId = entry.ids[index - 1]
   console.log("[getEpisode] episodeId:", episodeId)

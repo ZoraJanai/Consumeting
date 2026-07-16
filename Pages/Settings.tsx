@@ -114,7 +114,7 @@ function SheetOrder() {
 export function SettingsPage() {
   const dismiss = Navigation.useDismiss()
   const [videoPlayer, setVideoPlayer] = useState<VideoPlayerType>(
-    loadSetting(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
+    loadSetting<VideoPlayerType>(STORAGE_KEYS.VIDEO_PLAYER, "nPlayer")
   )
   const [Provider, setProvider] = useState<ProviderType>(
     loadSetting(STORAGE_KEYS.PROVIDER, "Anilist")
