@@ -418,8 +418,10 @@ export async function getEpisode(
 }
 
 export function shellWriteJsonFile(filename: string, payload: object): string {
-  // ashell wraps long lines with `\`, which breaks python -c ("line continuation").
-  // Keep every command ~60 chars: echo base64 chunks → tiny d.py → decode → mv.
+  // ashell quirks:
+  //  - wraps long lines with `\` → Python "line continuation" errors
+  //  - does not unescape \", so never emit double quotes in commands
+  // Keep short echo lines; build d.py with chr() so no quotes needed inside.
   const json = JSON.stringify(payload)
   const b64 =
     typeof btoa === "function"
@@ -429,19 +431,23 @@ export function shellWriteJsonFile(filename: string, payload: object): string {
     throw new Error("[kwikCF] btoa unavailable — cannot encode session for ashell")
   }
 
+  // Safe unquoted names only (no spaces / shell metacharacters)
+  const outName = filename.replace(/[^a-zA-Z0-9._-]/g, "_")
   const chunkSize = 40
   const lines: string[] = [
-    `rm -f k.b k.j d.py ${shellQuote(filename)}`,
+    `rm -f k.b k.j d.py ${outName}`,
   ]
   for (let i = 0; i < b64.length; i += chunkSize) {
-    // base64 alphabet is safe inside single quotes; echo is a shell builtin
     lines.push(`echo '${b64.slice(i, i + chunkSize)}' >> k.b`)
   }
-  lines.push(`echo 'import base64' > d.py`)
-  lines.push(`echo 't=open("k.b").read()' >> d.py`)
-  lines.push(`echo 'open("k.j","wb").write(base64.b64decode(t))' >> d.py`)
+  // d.py with no " characters (ashell turns them into \")
+  lines.push(`echo 'import base64 as B' > d.py`)
+  lines.push(`echo 't=open(chr(107)+chr(46)+chr(98)).read()' >> d.py`)
+  lines.push(`echo 'f=chr(107)+chr(46)+chr(106)' >> d.py`)
+  lines.push(`echo 'm=chr(119)+chr(98)' >> d.py`)
+  lines.push(`echo 'open(f,m).write(B.b64decode(t))' >> d.py`)
   lines.push(`python3 d.py`)
-  lines.push(`mv k.j ${shellQuote(filename)}`)
+  lines.push(`mv k.j ${outName}`)
   lines.push(`rm -f k.b d.py`)
   return lines.join("\n")
 }
