@@ -1143,77 +1143,7 @@ export async function presentKwikEmbedPlayer(
       await controller.loadURL(kwikEmbedUrl)
     }
 
-    // Re-apply black chrome + click Play → Fullscreen after Plyr mounts
-    // Play:  button.plyr__control--overlaid[data-plyr="play"]
-    // Full:  button.plyr__controls__item[data-plyr="fullscreen"]
-    const armClicks = `(() => {
-  if (window.__kwikClickArmed) return 'armed';
-  window.__kwikClickArmed = true;
-  var stage = 0;
-  var tries = 0;
-  function paint() {
-    var css = [
-      'html,body{background:#000!important;margin:0!important;padding:0!important;overflow:hidden!important;width:100%!important;height:100%!important}',
-      '.plyr,.plyr__video-wrapper,.plyr__poster,.embed-responsive,.container,#player{background:#000!important;border:none!important}',
-      'video{background:#000!important}'
-    ].join('');
-    var s = document.getElementById('__kwik_black');
-    if (!s) {
-      s = document.createElement('style');
-      s.id = '__kwik_black';
-      (document.head || document.documentElement).appendChild(s);
-    }
-    s.textContent = css;
-    try {
-      document.documentElement.style.background = '#000';
-      if (document.body) document.body.style.background = '#000';
-    } catch (e) {}
-  }
-  function playBtn() {
-    return document.querySelector('button.plyr__control--overlaid[data-plyr="play"]')
-      || document.querySelector('button[data-plyr="play"]');
-  }
-  function fsBtn() {
-    return document.querySelector('button.plyr__controls__item[data-plyr="fullscreen"]')
-      || document.querySelector('button[data-plyr="fullscreen"]');
-  }
-  paint();
-  window.__kwikClickTimer = setInterval(function () {
-    tries++;
-    paint();
-    if (tries > 50) {
-      clearInterval(window.__kwikClickTimer);
-      return;
-    }
-    var v = document.querySelector('video');
-    var playing = v && !v.paused;
-    var inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
-    var pb = playBtn();
-    var fb = fsBtn();
-
-    if (stage === 0) {
-      if (pb) {
-        pb.click();
-        stage = 1;
-      }
-      return;
-    }
-    if (stage === 1) {
-      if (playing || tries > 4) {
-        if (fb && !inFs) fb.click();
-        stage = 2;
-      }
-      return;
-    }
-    if (!playing && pb) pb.click();
-    if (!inFs && fb) fb.click();
-    if ((playing || tries > 12) && (inFs || tries > 15)) {
-      clearInterval(window.__kwikClickTimer);
-    }
-  }, 600);
-  return 'armed';
-})()`
-
+    // One-shot: paint black, click overlaid Play once, then Fullscreen once
     const ctrlDeadline = Date.now() + 30000
     while (Date.now() < ctrlDeadline) {
       try {
@@ -1222,15 +1152,15 @@ export async function presentKwikEmbedPlayer(
           "return !!document.querySelector('button.plyr__control--overlaid[data-plyr=\"play\"], button[data-plyr=\"play\"]')",
         )
         if (ready) {
-          const armed = await evalJs("return " + armClicks)
-          console.log("[kwikPlayer] click arm:", armed)
           await evalJs(
             "var b=document.querySelector('button.plyr__control--overlaid[data-plyr=\"play\"]')||document.querySelector('button[data-plyr=\"play\"]'); if(b) b.click(); return !!b",
           )
           await new Promise<void>(r => setTimeout(r, 600))
+          await evalJs("return " + paintBlack)
           await evalJs(
             "var b=document.querySelector('button.plyr__controls__item[data-plyr=\"fullscreen\"]')||document.querySelector('button[data-plyr=\"fullscreen\"]'); if(b) b.click(); return !!b",
           )
+          console.log("[kwikPlayer] play + fullscreen clicked once")
           break
         }
       } catch (e) {
