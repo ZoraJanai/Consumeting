@@ -6,6 +6,9 @@ Label
 } from "scripting"
 import { getQueue, saveQueue } from "../scripts/cache"
 import { normalizePaheUrl } from "../scripts/animepaheClient"
+import { ensureKwikCookiesForDownload } from "../scripts/animepaheSession"
+import { buildKwikSessionShellWrite, stripKwikSessionWrites } from "../scripts/episode"
+import { hideOverlay, showOverlay } from "./Loading"
 
 type DownloadAnime = {
   name: string
@@ -163,8 +166,39 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
   }, [items, onBadgeChange])
 
   async function download() {
-    const all = items.flatMap(item => item.links).join("\n")
-    const allEncoded = encodeURIComponent(all)
+    if (!items.length) return
+
+    showOverlay()
+    try {
+      // Fresh kwik.cx CF WebView (sheet) — animepahe verify alone is not enough for CDN
+      console.log("[Queue] capturing kwik.cx session before ashell")
+      await ensureKwikCookiesForDownload(true)
+    } catch (e) {
+      hideOverlay()
+      console.log("[Queue] kwik CF capture failed:", String(e))
+      try {
+        await Dialog.alert({
+          title: "kwik.cx verification failed",
+          message: String(e),
+        })
+      } catch {
+        /* Dialog may be unavailable */
+      }
+      return
+    }
+    hideOverlay()
+
+    const sessionWrite = buildKwikSessionShellWrite()
+    const body = items
+      .flatMap(item => {
+        const rest = stripKwikSessionWrites(item.links || [])
+        return rest
+      })
+      .join("\n")
+
+    // One fresh session write at the top, then all mkdir/hls/ffmpeg lines
+    const script = [sessionWrite, body].filter(Boolean).join("\n")
+    const allEncoded = encodeURIComponent(script)
     const finalUrl = `ashell://cd%0A${allEncoded}`
     await Safari.openURL(finalUrl)
 

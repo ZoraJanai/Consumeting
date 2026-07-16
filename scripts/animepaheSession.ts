@@ -1048,6 +1048,160 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
 }
 
 /**
+ * Present a WebView sheet on kwik.cx so the user can pass Cloudflare before
+ * Mac downloads (ashell). Required because captureKwikCookies() needs an
+ * already-open session WebView — Queue Download often has none.
+ */
+export async function presentKwikCfCapture(): Promise<{ cookies: string; userAgent: string }> {
+  await waitForKwikCaptureFree()
+  _kwikCapturing = true
+
+  const controller = new WebViewController()
+  controller.setCustomUserAgent(HARDWIRED_UA)
+
+  let result: { cookies: string; userAgent: string } | null = null
+  let lastError = ""
+
+  const readKwikSession = async (): Promise<{ cookies: string; userAgent: string } | null> => {
+    if (typeof controller.getAllCookies !== "function") return null
+    const all: any[] = (await controller.getAllCookies()) || []
+    const kwik = all.filter((c: any) => {
+      const d = ((c.domain as string) || "").replace(/^\./, "").toLowerCase()
+      return d === "kwik.cx" || d.endsWith(".kwik.cx")
+    })
+    if (!kwik.some((c: any) => c.name === "cf_clearance")) return null
+    const cookieHeader = kwik
+      .filter((c: any) => c.name && c.value)
+      .map((c: any) => (c.name as string) + "=" + (c.value as string))
+      .join("; ")
+    let userAgent = HARDWIRED_UA
+    try {
+      if (typeof controller.evaluateJavaScript === "function") {
+        userAgent = String((await controller.evaluateJavaScript("navigator.userAgent")) || HARDWIRED_UA)
+      }
+    } catch {
+      /* ignore */
+    }
+    return { cookies: cookieHeader, userAgent: userAgent || HARDWIRED_UA }
+  }
+
+  const injectContinue = async () => {
+    try {
+      const script = `
+        (function(){
+          if (document.getElementById('__kwik_continue')) return true;
+          var b = document.createElement('button');
+          b.id = '__kwik_continue';
+          b.textContent = 'Continue';
+          b.style.cssText = 'position:fixed;z-index:2147483647;left:50%;bottom:28px;transform:translateX(-50%);padding:14px 28px;font-size:17px;font-weight:600;border:none;border-radius:12px;background:#00d1b2;color:#000;box-shadow:0 4px 16px rgba(0,0,0,.35);';
+          b.onclick = function(){
+            try { window.webkit.messageHandlers.kwikContinue.postMessage('go'); } catch(e) {}
+          };
+          document.documentElement.appendChild(b);
+          return true;
+        })()
+      `
+      if (typeof controller.evaluateJavaScript === "function") {
+        await controller.evaluateJavaScript(script)
+      }
+    } catch (e) {
+      console.log("[kwikCF] inject continue failed:", String(e))
+    }
+  }
+
+  try {
+    if (controller.addScriptMessageHandler) {
+      await controller.addScriptMessageHandler("kwikContinue", async function () {
+        const got = await readKwikSession()
+        if (!got) {
+          lastError = "No cf_clearance yet — finish the check, wait a second, tap Continue again"
+          console.log("[kwikCF]", lastError)
+          try {
+            if (typeof controller.evaluateJavaScript === "function") {
+              await controller.evaluateJavaScript(
+                "alert('Cloudflare not cleared yet. Complete the check, then tap Continue.')",
+              )
+            }
+          } catch {
+            /* ignore */
+          }
+          return "wait"
+        }
+        result = got
+        saveKwikCookies(got.cookies, got.userAgent)
+        console.log("[kwikCF] sheet capture ok, cookies len:", got.cookies.length)
+        if (controller.dismiss) controller.dismiss()
+        return "ok"
+      })
+
+      await controller.addScriptMessageHandler("kwikPageReady", async function () {
+        await injectContinue()
+        return "ok"
+      })
+    }
+
+    console.log("[kwikCF] presenting kwik.cx verification sheet")
+    try {
+      await controller.clearAllCookies()
+    } catch {
+      /* ignore */
+    }
+    await controller.loadURL("https://kwik.cx/")
+    try {
+      if (controller.waitForLoad) await controller.waitForLoad()
+    } catch {
+      /* ignore */
+    }
+    await injectContinue()
+
+    await controller.present({
+      fullscreen: false,
+      navigationTitle: "Verify kwik.cx, then tap Continue",
+    })
+
+    if (!result) {
+      // Sheet closed without Continue — try reading cookies anyway
+      result = await readKwikSession()
+      if (result) saveKwikCookies(result.cookies, result.userAgent)
+    }
+
+    if (!result) {
+      throw new Error(lastError || "[kwikCF] kwik.cx CF clearance not obtained")
+    }
+    return result
+  } finally {
+    _kwikCapturing = false
+    try {
+      if (typeof controller.dispose === "function") controller.dispose()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Ensure kwik cookies exist — present CF sheet if missing or forceRefresh. */
+export async function ensureKwikCookiesForDownload(
+  forceRefresh = false,
+): Promise<{ cookies: string; userAgent: string }> {
+  const existing = getStoredKwikCookies()
+  if (!forceRefresh && existing.cookies.includes("cf_clearance=")) {
+    console.log("[kwikCF] reusing stored kwik cookies")
+    return existing
+  }
+  // Prefer dedicated sheet (works even with no animepahe WebView session)
+  try {
+    return await presentKwikCfCapture()
+  } catch (e) {
+    console.log("[kwikCF] sheet capture failed:", String(e))
+    // Fallback: background session WebView if alive
+    if (webViewController) {
+      return await captureKwikCookies()
+    }
+    throw e
+  }
+}
+
+/**
  * Open ONLY the kwik.cx/e/... Plyr embed (Settings → Safari player).
  *
  * Cold-opening the embed has no Referer and will not boot. Mirror the Mac test:
@@ -1058,6 +1212,7 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
 export async function presentKwikEmbedPlayer(
   playPageUrl: string,
   kwikEmbedUrl: string,
+  navigationTitle?: string,
 ): Promise<void> {
   if (!kwikEmbedUrl.includes("kwik.cx/e/")) {
     throw new Error("[kwikPlayer] expected kwik.cx/e/... embed URL")
@@ -1173,7 +1328,7 @@ export async function presentKwikEmbedPlayer(
     hideOverlay()
     await controller.present({
       fullscreen: true,
-      navigationTitle: "Kwik",
+      navigationTitle: (navigationTitle || "").trim() || "Player",
     })
   } catch (err) {
     hideOverlay()

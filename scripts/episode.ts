@@ -7,6 +7,7 @@ import { saveData } from "./data"
 import { BaseInfo } from "./search"
 import {
   captureKwikCookies,
+  ensureKwikCookiesForDownload,
   getStoredKwikCookies,
   HARDWIRED_UA,
   isWebViewSessionActive,
@@ -391,8 +392,9 @@ export async function getEpisode(
       )
     }
     const playPageUrl = getDirectBaseUrl() + "/play/" + episodeId
+    const playerTitle = `${entry.name} · Ep ${index}`
     console.log("[getEpisode] Safari → kwik embed:", kwikEmbed.slice(0, 80))
-    await presentKwikEmbedPlayer(playPageUrl, kwikEmbed)
+    await presentKwikEmbedPlayer(playPageUrl, kwikEmbed, playerTitle)
   } else {
     hideOverlay()
     const openUrl = streamUrl(selected)
@@ -415,10 +417,49 @@ export async function getEpisode(
   return cacheEntry
 }
 
-function shellWriteJsonFile(filename: string, payload: object): string {
+export function shellWriteJsonFile(filename: string, payload: object): string {
+  // Heredoc — avoids giant base64 one-liners that ashell/line-wrap corrupts
   const json = JSON.stringify(payload)
-  const b64 = btoa(unescape(encodeURIComponent(json)))
-  return `python3 -c "import base64, pathlib; pathlib.Path('${filename}').write_bytes(base64.b64decode('${b64}'))"`
+  return [
+    `cat > ${shellQuote(filename)} <<'CONSUMETING_JSON'`,
+    json,
+    "CONSUMETING_JSON",
+  ].join("\n")
+}
+
+/** Fresh kwik_session.json shell block for ashell (call after ensureKwikCookiesForDownload). */
+export function buildKwikSessionShellWrite(): string {
+  const kwikSession = getStoredKwikCookies()
+  return shellWriteJsonFile("kwik_session.json", {
+    cookies: kwikSession.cookies || "",
+    userAgent: kwikSession.userAgent || HARDWIRED_UA,
+  })
+}
+
+/** Strip prior kwik_session heredoc blocks from a queue links list. */
+export function stripKwikSessionWrites(links: string[]): string[] {
+  const out: string[] = []
+  let skipping = false
+  for (const line of links) {
+    // Multi-line heredoc stored as one string with embedded \n
+    if (line.includes("kwik_session.json") && line.includes("CONSUMETING_JSON")) {
+      continue
+    }
+    if (line.includes("kwik_session.json") && line.includes("<<")) {
+      skipping = true
+      continue
+    }
+    if (skipping) {
+      if (line.trim() === "CONSUMETING_JSON") skipping = false
+      continue
+    }
+    // Legacy base64 one-liner
+    if (line.includes("kwik_session.json") && line.includes("base64")) {
+      continue
+    }
+    out.push(line)
+  }
+  return out
 }
 
 /** Escape a value for use inside double quotes in ashell / zsh. */
@@ -469,24 +510,15 @@ export async function downloadEpisode(
   const escapedName = safeName.replace(/([^a-zA-Z0-9.\-_:=@])/g, '\\$1')
   const links: string[] = [`mkdir -p "${safeName}"`]
 
-  // Ensure kwik CF session exists before we scrape embeds / write session file
-  if (!getStoredKwikCookies().cookies && isWebViewSessionActive()) {
-    console.log("[downloadEpisode] capturing kwik.cx CF session for hls_fix.py")
-    try {
-      await captureKwikCookies()
-    } catch (e) {
-      console.log("[downloadEpisode] kwik capture failed (Referer alone may still work):", String(e))
-    }
+  // Fresh kwik CF for hls_fix.py cookies (presents sheet if needed)
+  console.log("[downloadEpisode] ensuring kwik.cx CF session for hls_fix.py")
+  try {
+    await ensureKwikCookiesForDownload(false)
+  } catch (e) {
+    console.log("[downloadEpisode] kwik capture failed (Referer alone may still work):", String(e))
   }
 
-  const kwikSession = getStoredKwikCookies()
-  // Always write session JSON — UA is required; cookies help but Referer is the main CF gate
-  links.push(
-    shellWriteJsonFile("kwik_session.json", {
-      cookies: kwikSession.cookies || "",
-      userAgent: kwikSession.userAgent || HARDWIRED_UA,
-    }),
-  )
+  links.push(buildKwikSessionShellWrite())
 
   // Phase 1: fetch all episode sources (gated to avoid rate limits)
   const allSources: QualityMap[] = new Array(total)
