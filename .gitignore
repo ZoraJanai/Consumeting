@@ -10,3 +10,4 @@ play_page_debug.html
 requirements-test.txt
 test_kwik_hls.py
 test_safari_player.py
+*.m3u8

@@ -476,11 +476,14 @@ export function buildKwikSessionShellWrite(session?: {
   })
 }
 
-/** Strip prior kwik_session write commands from a queue links list. */
+/** Strip prior kwik_session *write* commands from a queue links list.
+ *  Do NOT strip download lines that only pass --session-file kwik_session.json.
+ */
 export function stripKwikSessionWrites(links: string[]): string[] {
   const out: string[] = []
   let skipping = false
   for (const line of links) {
+    // Chunked session bootstrap only
     if (
       line.includes("--b64-reset") ||
       line.includes("--b64-append") ||
@@ -488,23 +491,18 @@ export function stripKwikSessionWrites(links: string[]): string[] {
     ) {
       continue
     }
+    // Legacy echo/d.py/k.b session writers (not hls_fix downloads)
     if (
-      line.includes("kwik_session.json") ||
-      line.includes("kwik_session.json.b64") ||
-      /(^|\s)(k\.b|k\.j|d\.py)(\s|$|"|')/.test(line)
-    ) {
-      if (
-        line.includes("echo ") ||
-        line.includes("python3") ||
-        line.includes("base64") ||
-        line.includes("CONSUMETING_JSON") ||
-        line.includes("<<") ||
+      (line.includes("kwik_session.json.b64") ||
+        /(^|\s)(k\.b|k\.j|d\.py)(\s|$|"|')/.test(line)) &&
+      (line.includes("echo ") ||
         line.includes("rm -f") ||
-        line.includes("mv ")
-      ) {
-        continue
-      }
+        line.includes("mv ") ||
+        (line.includes("python3") && !line.includes("hls_fix.py")))
+    ) {
+      continue
     }
+    // Legacy heredoc session write
     if (line.includes("kwik_session.json") && line.includes("CONSUMETING_JSON")) {
       continue
     }
@@ -521,14 +519,29 @@ export function stripKwikSessionWrites(links: string[]): string[] {
   return out
 }
 
-/** Escape a value for use inside double quotes in ashell / zsh. */
+/** Escape a value for use inside double quotes in zsh (NOT for ashell — it mangles "). */
 function shellQuote(value: string): string {
   return '"' + value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$") + '"'
 }
 
 /**
+ * ashell turns "foo" into literal \"foo\" in argv (breaks curl URLs).
+ * Only pass unquoted args that need no shell quoting.
+ */
+function ashellArg(value: string): string {
+  const v = String(value || "").trim()
+  if (!v) throw new Error("[ashell] empty argument")
+  // Reject anything that would require quotes
+  if (/[\s"'\\`$|&;<>(){}]/.test(v)) {
+    throw new Error("[ashell] unsafe arg (ashell cannot quote): " + v.slice(0, 100))
+  }
+  return v
+}
+
+/**
  * Build the Mac-side download pair for one episode.
  * hls_fix.py must use curl + kwik embed Referer (urllib gets CF 403).
+ * Do NOT double-quote URLs — ashell keeps \" literally and curl rejects the URL.
  */
 function buildHlsDownloadCommands(
   m3u8Url: string,
@@ -540,7 +553,7 @@ function buildHlsDownloadCommands(
     ? kwikReferer
     : kwikReferer || "https://kwik.cx/"
   return [
-    `python3 hls_fix.py ${shellQuote(m3u8Url)} --referer ${shellQuote(referer)} --session-file kwik_session.json`,
+    `python3 hls_fix.py ${ashellArg(m3u8Url)} --referer ${ashellArg(referer)} --session-file kwik_session.json --workers 3 --segments-per-minute 540`,
     `ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${episodeNumber}.mp4`,
   ]
 }
