@@ -7,7 +7,7 @@ Label
 import { getQueue, saveQueue } from "../scripts/cache"
 import { normalizePaheUrl } from "../scripts/animepaheClient"
 import { ensureKwikCookiesForDownload } from "../scripts/animepaheSession"
-import { buildKwikSessionShellWrite, stripKwikSessionWrites } from "../scripts/episode"
+import { buildAshellUrl, buildKwikSessionShellWrite, stripKwikSessionWrites } from "../scripts/episode"
 import { hideOverlay, showOverlay } from "./Loading"
 
 type DownloadAnime = {
@@ -169,13 +169,12 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
     if (!items.length) return
 
     showOverlay()
-    let sessionWrite = ""
+    let sessionCmds: string[] = []
     try {
       // Fresh kwik.cx CF WebView (sheet) — animepahe verify alone is not enough for CDN
       console.log("[Queue] capturing kwik.cx session before ashell")
       const kwikSession = await ensureKwikCookiesForDownload(true)
-      // Use the returned session — re-reading Storage was writing empty cookies
-      sessionWrite = buildKwikSessionShellWrite(kwikSession)
+      sessionCmds = buildKwikSessionShellWrite(kwikSession)
       console.log("[Queue] kwik session ready, cookies len:", kwikSession.cookies.length)
     } catch (e) {
       hideOverlay()
@@ -192,17 +191,13 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
     }
     hideOverlay()
 
-    const body = items
-      .flatMap(item => {
-        const rest = stripKwikSessionWrites(item.links || [])
-        return rest
-      })
-      .join("\n")
+    const bodyCmds = items.flatMap(item => {
+      const rest = stripKwikSessionWrites(item.links || [])
+      return rest.flatMap(line => String(line).split(/\n+/)).map(s => s.trim()).filter(Boolean)
+    })
 
-    // One fresh session write at the top, then all mkdir/hls/ffmpeg lines
-    const script = [sessionWrite, body].filter(Boolean).join("\n")
-    const allEncoded = encodeURIComponent(script)
-    const finalUrl = `ashell://cd%0A${allEncoded}`
+    // Each command is its own ashell step (encode separately — do NOT join with literal \n)
+    const finalUrl = buildAshellUrl(["cd", ...sessionCmds, ...bodyCmds])
     await Safari.openURL(finalUrl)
 
     clearQueue()

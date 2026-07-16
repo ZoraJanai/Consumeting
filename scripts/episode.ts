@@ -417,11 +417,21 @@ export async function getEpisode(
   return cacheEntry
 }
 
-export function shellWriteJsonFile(filename: string, payload: object): string {
-  // ashell quirks:
-  //  - wraps long lines with `\` → Python "line continuation" errors
-  //  - does not unescape \", so never emit double quotes in commands
-  // Keep short echo lines; build d.py with chr() so no quotes needed inside.
+/** Build ashell:// URL — encode each command separately, join with %0A. */
+export function buildAshellUrl(commands: string[]): string {
+  const parts = commands
+    .flatMap(c => String(c).split(/\n+/))
+    .map(c => c.trim())
+    .filter(Boolean)
+    .map(c => encodeURIComponent(c))
+  return "ashell://" + parts.join("%0A")
+}
+
+/**
+ * ashell-safe session write via hls_fix.py --b64-* (no echo/quotes/heredoc).
+ * Returns one short command per array entry — must be separate ashell commands.
+ */
+export function shellWriteJsonFile(filename: string, payload: object): string[] {
   const json = JSON.stringify(payload)
   const b64 =
     typeof btoa === "function"
@@ -431,36 +441,27 @@ export function shellWriteJsonFile(filename: string, payload: object): string {
     throw new Error("[kwikCF] btoa unavailable — cannot encode session for ashell")
   }
 
-  // Safe unquoted names only (no spaces / shell metacharacters)
   const outName = filename.replace(/[^a-zA-Z0-9._-]/g, "_")
-  const chunkSize = 40
-  const lines: string[] = [
-    `rm -f k.b k.j d.py ${outName}`,
-  ]
+  const chunkSize = 32
+  const lines: string[] = [`python3 hls_fix.py --b64-reset --session-file ${outName}`]
   for (let i = 0; i < b64.length; i += chunkSize) {
-    lines.push(`echo '${b64.slice(i, i + chunkSize)}' >> k.b`)
+    // base64 alphabet is safe unquoted in ashell
+    lines.push(
+      `python3 hls_fix.py --b64-append ${b64.slice(i, i + chunkSize)}`,
+    )
   }
-  // d.py with no " characters (ashell turns them into \")
-  lines.push(`echo 'import base64 as B' > d.py`)
-  lines.push(`echo 't=open(chr(107)+chr(46)+chr(98)).read()' >> d.py`)
-  lines.push(`echo 'f=chr(107)+chr(46)+chr(106)' >> d.py`)
-  lines.push(`echo 'm=chr(119)+chr(98)' >> d.py`)
-  lines.push(`echo 'open(f,m).write(B.b64decode(t))' >> d.py`)
-  lines.push(`python3 d.py`)
-  lines.push(`mv k.j ${outName}`)
-  lines.push(`rm -f k.b d.py`)
-  return lines.join("\n")
+  lines.push(`python3 hls_fix.py --b64-finalize --session-file ${outName}`)
+  return lines
 }
 
 /**
- * Fresh kwik_session.json shell block for ashell.
- * Pass the session returned by ensureKwikCookiesForDownload — do not rely on
- * a second Storage read (that was writing empty cookies).
+ * Fresh kwik_session.json commands for ashell.
+ * Pass the session returned by ensureKwikCookiesForDownload.
  */
 export function buildKwikSessionShellWrite(session?: {
   cookies: string
   userAgent: string
-}): string {
+}): string[] {
   const kwikSession = session || getStoredKwikCookies()
   const cookies = (kwikSession.cookies || "").trim()
   if (!cookies.includes("cf_clearance=")) {
@@ -480,7 +481,13 @@ export function stripKwikSessionWrites(links: string[]): string[] {
   const out: string[] = []
   let skipping = false
   for (const line of links) {
-    // Session bootstrap (echo chunks / d.py / k.b / k.j / kwik_session.json)
+    if (
+      line.includes("--b64-reset") ||
+      line.includes("--b64-append") ||
+      line.includes("--b64-finalize")
+    ) {
+      continue
+    }
     if (
       line.includes("kwik_session.json") ||
       line.includes("kwik_session.json.b64") ||
@@ -498,7 +505,6 @@ export function stripKwikSessionWrites(links: string[]): string[] {
         continue
       }
     }
-    // Multi-line heredoc stored as one string with embedded \n
     if (line.includes("kwik_session.json") && line.includes("CONSUMETING_JSON")) {
       continue
     }
@@ -574,7 +580,7 @@ export async function downloadEpisode(
       "kwik.cx CF capture failed — downloads need cookies for uwucdn: " + String(e),
     )
   }
-  links.push(buildKwikSessionShellWrite(kwikSession))
+  links.push(...buildKwikSessionShellWrite(kwikSession))
 
   // Phase 1: fetch all episode sources (gated to avoid rate limits)
   const allSources: QualityMap[] = new Array(total)
