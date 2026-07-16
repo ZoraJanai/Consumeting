@@ -418,8 +418,8 @@ export async function getEpisode(
 }
 
 export function shellWriteJsonFile(filename: string, payload: object): string {
-  // ashell: no printf; long python3 -c "..." breaks (literal \", wrapped base64).
-  // Append base64 in short python writes, then a tiny single-quoted decode.
+  // ashell wraps long lines with `\`, which breaks python -c ("line continuation").
+  // Keep every command ~60 chars: echo base64 chunks → tiny d.py → decode → mv.
   const json = JSON.stringify(payload)
   const b64 =
     typeof btoa === "function"
@@ -429,22 +429,20 @@ export function shellWriteJsonFile(filename: string, payload: object): string {
     throw new Error("[kwikCF] btoa unavailable — cannot encode session for ashell")
   }
 
-  const b64File = filename + ".b64"
-  const chunkSize = 80
+  const chunkSize = 40
   const lines: string[] = [
-    `rm -f ${shellQuote(filename)} ${shellQuote(b64File)}`,
+    `rm -f k.b k.j d.py ${shellQuote(filename)}`,
   ]
   for (let i = 0; i < b64.length; i += chunkSize) {
-    const chunk = b64.slice(i, i + chunkSize)
-    // base64 alphabet is safe inside single-quoted -c scripts
-    const mode = i === 0 ? "w" : "a"
-    lines.push(
-      `python3 -c 'open(${JSON.stringify(b64File)},${JSON.stringify(mode)}).write(${JSON.stringify(chunk)})'`,
-    )
+    // base64 alphabet is safe inside single quotes; echo is a shell builtin
+    lines.push(`echo '${b64.slice(i, i + chunkSize)}' >> k.b`)
   }
-  lines.push(
-    `python3 -c 'import base64,os;f=${JSON.stringify(filename)};b=${JSON.stringify(b64File)};open(f,"wb").write(base64.b64decode(open(b).read()));os.remove(b)'`,
-  )
+  lines.push(`echo 'import base64' > d.py`)
+  lines.push(`echo 't=open("k.b").read()' >> d.py`)
+  lines.push(`echo 'open("k.j","wb").write(base64.b64decode(t))' >> d.py`)
+  lines.push(`python3 d.py`)
+  lines.push(`mv k.j ${shellQuote(filename)}`)
+  lines.push(`rm -f k.b d.py`)
   return lines.join("\n")
 }
 
@@ -476,17 +474,20 @@ export function stripKwikSessionWrites(links: string[]): string[] {
   const out: string[] = []
   let skipping = false
   for (const line of links) {
-    // Chunked python writes → .b64 or decode of kwik_session
+    // Session bootstrap (echo chunks / d.py / k.b / k.j / kwik_session.json)
     if (
       line.includes("kwik_session.json") ||
-      line.includes("kwik_session.json.b64")
+      line.includes("kwik_session.json.b64") ||
+      /(^|\s)(k\.b|k\.j|d\.py)(\s|$|"|')/.test(line)
     ) {
       if (
-        line.includes("python3 -c") ||
+        line.includes("echo ") ||
+        line.includes("python3") ||
         line.includes("base64") ||
         line.includes("CONSUMETING_JSON") ||
         line.includes("<<") ||
-        (line.includes("rm -f") && line.includes("kwik_session"))
+        line.includes("rm -f") ||
+        line.includes("mv ")
       ) {
         continue
       }
