@@ -418,8 +418,8 @@ export async function getEpisode(
 }
 
 export function shellWriteJsonFile(filename: string, payload: object): string {
-  // Single-line python write — ashell does not reliably run shell heredocs, which
-  // produced empty kwik_session.json even when cookies were captured.
+  // ashell: no printf; long python3 -c "..." breaks (literal \", wrapped base64).
+  // Append base64 in short python writes, then a tiny single-quoted decode.
   const json = JSON.stringify(payload)
   const b64 =
     typeof btoa === "function"
@@ -428,13 +428,24 @@ export function shellWriteJsonFile(filename: string, payload: object): string {
   if (!b64) {
     throw new Error("[kwikCF] btoa unavailable — cannot encode session for ashell")
   }
-  const py =
-    "import base64;open(" +
-    JSON.stringify(filename) +
-    ',"wb").write(base64.b64decode(' +
-    JSON.stringify(b64) +
-    "))"
-  return `python3 -c ${shellQuote(py)}`
+
+  const b64File = filename + ".b64"
+  const chunkSize = 80
+  const lines: string[] = [
+    `rm -f ${shellQuote(filename)} ${shellQuote(b64File)}`,
+  ]
+  for (let i = 0; i < b64.length; i += chunkSize) {
+    const chunk = b64.slice(i, i + chunkSize)
+    // base64 alphabet is safe inside single-quoted -c scripts
+    const mode = i === 0 ? "w" : "a"
+    lines.push(
+      `python3 -c 'open(${JSON.stringify(b64File)},${JSON.stringify(mode)}).write(${JSON.stringify(chunk)})'`,
+    )
+  }
+  lines.push(
+    `python3 -c 'import base64,os;f=${JSON.stringify(filename)};b=${JSON.stringify(b64File)};open(f,"wb").write(base64.b64decode(open(b).read()));os.remove(b)'`,
+  )
+  return lines.join("\n")
 }
 
 /**
@@ -465,9 +476,20 @@ export function stripKwikSessionWrites(links: string[]): string[] {
   const out: string[] = []
   let skipping = false
   for (const line of links) {
-    // Current: python3 -c '...kwik_session.json...'
-    if (line.includes("kwik_session.json") && line.includes("python3 -c")) {
-      continue
+    // Chunked python writes → .b64 or decode of kwik_session
+    if (
+      line.includes("kwik_session.json") ||
+      line.includes("kwik_session.json.b64")
+    ) {
+      if (
+        line.includes("python3 -c") ||
+        line.includes("base64") ||
+        line.includes("CONSUMETING_JSON") ||
+        line.includes("<<") ||
+        (line.includes("rm -f") && line.includes("kwik_session"))
+      ) {
+        continue
+      }
     }
     // Multi-line heredoc stored as one string with embedded \n
     if (line.includes("kwik_session.json") && line.includes("CONSUMETING_JSON")) {
@@ -479,10 +501,6 @@ export function stripKwikSessionWrites(links: string[]): string[] {
     }
     if (skipping) {
       if (line.trim() === "CONSUMETING_JSON") skipping = false
-      continue
-    }
-    // Legacy base64 one-liner
-    if (line.includes("kwik_session.json") && line.includes("base64")) {
       continue
     }
     out.push(line)
