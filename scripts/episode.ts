@@ -569,19 +569,18 @@ export async function downloadEpisode(
   const escapedName = safeName.replace(/([^a-zA-Z0-9.\-_:=@])/g, '\\$1')
   const links: string[] = [`mkdir -p "${safeName}"`]
 
-  // Fresh kwik CF for hls_fix.py cookies (presents sheet if needed)
+  // Capture kwik CF into app storage (Queue Download injects the ashell session write)
   console.log("[downloadEpisode] ensuring kwik.cx CF session for hls_fix.py")
-  let kwikSession: { cookies: string; userAgent: string }
   try {
-    kwikSession = await ensureKwikCookiesForDownload(false)
+    await ensureKwikCookiesForDownload(false)
   } catch (e) {
     hideOverlay()
     throw new Error(
       "kwik.cx CF capture failed — downloads need cookies for uwucdn: " + String(e),
     )
   }
-  links.push(...buildKwikSessionShellWrite(kwikSession))
-
+  // Do NOT push --b64-* session chunks into queue links — they inflate the badge
+  // and go stale. Queue.tsx writes a fresh session immediately before ashell.
   // Phase 1: fetch all episode sources (gated to avoid rate limits)
   const allSources: QualityMap[] = new Array(total)
   let fetchDone = 0

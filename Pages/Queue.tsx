@@ -155,14 +155,16 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 🔔 update badge count whenever items change
+  // 🔔 badge = episode downloads only (ffmpeg → local.m3u8), not --b64-* session chunks
   useEffect(() => {
-    // Count hls_fix.py lines (setup cmds like mkdir / session JSON are ignored)
-    const totalLinks = items.reduce(
-      (sum, q) => sum + (q.links?.filter(l => l.includes("hls_fix.py")).length ?? 0),
-      0,
-    )
-    onBadgeChange?.(totalLinks)
+    const totalEps = items.reduce((sum, q) => {
+      const n =
+        q.links?.filter(
+          l => l.includes("ffmpeg") && l.includes("hls_fixed/local.m3u8"),
+        ).length ?? 0
+      return sum + n
+    }, 0)
+    onBadgeChange?.(totalEps)
   }, [items, onBadgeChange])
 
   async function download() {
