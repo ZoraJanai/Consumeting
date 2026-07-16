@@ -6,16 +6,18 @@ import { addCache, addQueue } from "./cache"
 import { saveData } from "./data"
 import { BaseInfo } from "./search"
 import {
+  captureKwikCookies,
+  getStoredKwikCookies,
+  HARDWIRED_UA,
+  isWebViewSessionActive,
+  paheHeaders,
+  presentKwikEmbedPlayer,
+} from "./animepaheSession"
+import {
   directFetchPlayPage,
   getDirectBaseUrl,
   paheFetchStreamingSourcesFromApi,
 } from "./animepaheClient"
-import {
-  captureKwikCookies,
-  getStoredKwikCookies,
-  isWebViewSessionActive,
-  paheHeaders,
-} from "./animepaheSession"
 
 // ---- Types ----
 
@@ -28,7 +30,12 @@ type Anime = {
   paheID?: string
 }
 
-export type QualityMap = Record<string, string>
+export type StreamEntry = { url: string; referer: string }
+export type QualityMap = Record<string, StreamEntry>
+
+function streamUrl(entry: StreamEntry | undefined): string | undefined {
+  return entry?.url
+}
 
 type EntryType = {
   name: string
@@ -105,18 +112,14 @@ function useApiMode(): boolean {
 
 // ─── HLS extractor — mirrors Aniyomi getHlsVideo (kwik.cx/e/xxx embed) ──────
 //
-// HAR analysis: Aniyomi hits kwik.cx/e/xxx with:
-//   Referer: https://animepahe.pw/
-//   Cookie: srv=s0; kwik_session=xxx  (no cf_clearance — /e/ is not CF-protected)
-//
-// kwik_session is obtained during boot captureKwikCookies() and reused here.
-// On failure the session is refreshed once before giving up.
-async function extractKwikHlsUrl(kwikEmbedUrl: string, animepaheBase: string): Promise<string> {
+// Returns { url: owocdn/uwucdn m3u8, referer: kwik.cx/e/... } so downloadEpisode
+// can emit: python3 hls_fix.py "<m3u8>" --referer "<kwik embed>" --session-file ...
+async function extractKwikHlsUrl(kwikEmbedUrl: string, animepaheBase: string): Promise<StreamEntry> {
   const buildHeaders = () => {
     const h = paheHeaders({ referer: animepaheBase + "/", mode: "navigate" })
     const { cookies, userAgent } = getStoredKwikCookies()
     if (cookies) h["Cookie"] = cookies
-    if (userAgent) h["User-Agent"] = userAgent
+    h["User-Agent"] = userAgent || HARDWIRED_UA
     return h
   }
 
@@ -136,15 +139,23 @@ async function extractKwikHlsUrl(kwikEmbedUrl: string, animepaheBase: string): P
   if (!response.ok) throw new Error(`[kwikHls] fetch failed: ${response.status}`)
 
   const html = await response.text()
-  const packedMatch = /(eval)(\(f.*?)(\n<\/script>)/s.exec(html)
-  if (!packedMatch) throw new Error("[kwikHls] packed script not found")
-
-  const unpacked = eval(packedMatch[2].replace("eval", ""))
-  const m3u8Match = unpacked.match(/https.*?m3u8/)
+  // Aniyomi: last eval(function(...)) in the page (earlier packs are noise)
+  const lastEval = html.lastIndexOf("eval(function(")
+  if (lastEval < 0) throw new Error("[kwikHls] packed script not found")
+  const scriptTail = html.slice(lastEval)
+  const endScript = scriptTail.search(/<\/script>/i)
+  const packedBlock = endScript >= 0 ? scriptTail.slice(0, endScript) : scriptTail
+  const expr = packedBlock.replace(/^eval/, "")
+  const unpacked = eval(expr)
+  const unpackedStr = typeof unpacked === "string" ? unpacked : String(unpacked)
+  const sourceMatch = /const source=['"](https[^'"]+\.m3u8[^'"]*)['"]/.exec(unpackedStr)
+  const m3u8Match = sourceMatch?.[1] || unpackedStr.match(/https[^"'\s\\]+?\.m3u8[^"'\s\\]*/i)?.[0]
   if (!m3u8Match) throw new Error("[kwikHls] m3u8 URL not found")
 
-  console.log("[kwikHls] m3u8:", m3u8Match[0].slice(0, 100))
-  return m3u8Match[0]
+  // CDN CF needs the embed URL as Referer (not animepahe, not bare kwik.cx/)
+  const referer = kwikEmbedUrl
+  console.log("[kwikHls] m3u8:", m3u8Match.slice(0, 100), "referer:", referer.slice(0, 80))
+  return { url: m3u8Match, referer }
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -221,9 +232,17 @@ async function scrapePlayPageSources(episodeId: string, qualityOrder?: string[])
   return dict
 }
 
+function normalizeApiSources(raw: Record<string, string>): QualityMap {
+  const dict: QualityMap = {}
+  for (const tag of Object.keys(raw)) {
+    dict[tag] = { url: raw[tag], referer: "https://kwik.cx/" }
+  }
+  return dict
+}
+
 export async function getAnimepaheSources(episodeId: string, qualityOrder?: string[]): Promise<QualityMap> {
   if (useApiMode()) {
-    return paheFetchStreamingSourcesFromApi(episodeId)
+    return normalizeApiSources(await paheFetchStreamingSourcesFromApi(episodeId))
   }
 
   return scrapePlayPageSources(episodeId, qualityOrder)
@@ -234,7 +253,7 @@ export async function getAnimepaheSources(episodeId: string, qualityOrder?: stri
 export function qualityAutoSelect(
   qualities: QualityMap,
   qualityOrder: string[],
-): string | undefined {
+): StreamEntry | undefined {
   for (const q of qualityOrder) {
     if (qualities[q]) return qualities[q]
   }
@@ -335,11 +354,11 @@ export async function getEpisode(
   console.log("[getEpisode] sources:", Object.keys(sources))
 
   const tags = Object.keys(sources)
-  let selectedUrl: string | undefined
+  let selected: StreamEntry | undefined
 
   if (autoQuality) {
-    selectedUrl = qualityAutoSelect(sources, order)
-    if (!selectedUrl) {
+    selected = qualityAutoSelect(sources, order)
+    if (!selected) {
       if (!askQuality) throw new Error("askQuality callback not provided")
       const pickedTag = await askQuality(tags)
       const filtered = order.filter(q => q !== pickedTag)
@@ -350,22 +369,36 @@ export async function getEpisode(
       ]
       saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
       order = newOrder
-      selectedUrl = sources[pickedTag]
+      selected = sources[pickedTag]
     }
   } else {
     if (!askQuality) throw new Error("askQuality callback not provided")
     const pickedTag = await askQuality(tags)
-    selectedUrl = sources[pickedTag]
+    selected = sources[pickedTag]
   }
 
   hideOverlay()
 
-  const openUrl = selectedUrl
-  console.log("[getEpisode] m3u8:", openUrl.substring(0, 100))
+  const openUrl = streamUrl(selected)
+  if (!openUrl) throw new Error("No stream URL selected")
 
-  const finalUrl = player === "nPlayer" ? "-" + openUrl : "://" + openUrl
-  console.log("[getEpisode] opening:", (player + finalUrl).substring(0, 100))
-  await Safari.openURL((player + finalUrl).toLowerCase())
+  if (player === "Safari") {
+    // Kwik embed only — play page is a Referer stepping stone (see test_safari_player.py)
+    const kwikEmbed = selected?.referer || ""
+    if (!kwikEmbed.includes("kwik.cx/e/")) {
+      throw new Error(
+        "Safari player needs a kwik.cx/e/... embed URL (use direct animepahe mode, not API-only)",
+      )
+    }
+    const playPageUrl = getDirectBaseUrl() + "/play/" + episodeId
+    console.log("[getEpisode] Safari → kwik embed:", kwikEmbed.slice(0, 80))
+    await presentKwikEmbedPlayer(playPageUrl, kwikEmbed)
+  } else {
+    console.log("[getEpisode] m3u8:", openUrl.substring(0, 100))
+    const finalUrl = player === "nPlayer" ? "-" + openUrl : "://" + openUrl
+    console.log("[getEpisode] opening:", (player + finalUrl).substring(0, 100))
+    await Safari.openURL((player + finalUrl).toLowerCase())
+  }
 
   const stillUnread = index !== Number(entry.total)
   const cacheEntry: Anime = {
@@ -377,6 +410,36 @@ export async function getEpisode(
   }
   addCache(cacheEntry)
   return cacheEntry
+}
+
+function shellWriteJsonFile(filename: string, payload: object): string {
+  const json = JSON.stringify(payload)
+  const b64 = btoa(unescape(encodeURIComponent(json)))
+  return `python3 -c "import base64, pathlib; pathlib.Path('${filename}').write_bytes(base64.b64decode('${b64}'))"`
+}
+
+/** Escape a value for use inside double quotes in ashell / zsh. */
+function shellQuote(value: string): string {
+  return '"' + value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$") + '"'
+}
+
+/**
+ * Build the Mac-side download pair for one episode.
+ * hls_fix.py must use curl + kwik embed Referer (urllib gets CF 403).
+ */
+function buildHlsDownloadCommands(
+  m3u8Url: string,
+  kwikReferer: string,
+  escapedName: string,
+  episodeNumber: number,
+): string[] {
+  const referer = kwikReferer.includes("kwik.cx/e/")
+    ? kwikReferer
+    : kwikReferer || "https://kwik.cx/"
+  return [
+    `python3 hls_fix.py ${shellQuote(m3u8Url)} --referer ${shellQuote(referer)} --session-file kwik_session.json`,
+    `ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${episodeNumber}.mp4`,
+  ]
 }
 
 // ---- Download Episode ----
@@ -401,9 +464,28 @@ export async function downloadEpisode(
   const safeName = sanitizeFilename(entry.name)
   // Escape all shell-special chars; alphanumerics, dash, dot, underscore, colon, equals, @ are safe unquoted
   const escapedName = safeName.replace(/([^a-zA-Z0-9.\-_:=@])/g, '\\$1')
-  const links: string[] = [`mkdir "${safeName}"`]
+  const links: string[] = [`mkdir -p "${safeName}"`]
 
-  // Phase 1: fetch all episode sources in parallel (3 workers, 125ms global gap)
+  // Ensure kwik CF session exists before we scrape embeds / write session file
+  if (!getStoredKwikCookies().cookies && isWebViewSessionActive()) {
+    console.log("[downloadEpisode] capturing kwik.cx CF session for hls_fix.py")
+    try {
+      await captureKwikCookies()
+    } catch (e) {
+      console.log("[downloadEpisode] kwik capture failed (Referer alone may still work):", String(e))
+    }
+  }
+
+  const kwikSession = getStoredKwikCookies()
+  // Always write session JSON — UA is required; cookies help but Referer is the main CF gate
+  links.push(
+    shellWriteJsonFile("kwik_session.json", {
+      cookies: kwikSession.cookies || "",
+      userAgent: kwikSession.userAgent || HARDWIRED_UA,
+    }),
+  )
+
+  // Phase 1: fetch all episode sources (gated to avoid rate limits)
   const allSources: QualityMap[] = new Array(total)
   let fetchDone = 0
   let cursor = 0
@@ -436,32 +518,35 @@ export async function downloadEpisode(
     const sources = allSources[i]
     const tags = Object.keys(sources)
 
-    let url = qualityAutoSelect(sources, order)
+    let selected = qualityAutoSelect(sources, order)
 
-    if (!url) {
+    if (!selected) {
       if (autoQuality) {
         if (chosenTag) {
-          url = sources[chosenTag]
+          selected = sources[chosenTag]
         }
-        if (!url) {
+        if (!selected) {
           if (!askQuality) throw new Error("askQuality callback not provided")
           chosenTag = await askQuality(tags)
           const filtered = order.filter(q => q !== chosenTag)
           const newOrder = [...filtered.slice(0, 2), chosenTag, ...filtered.slice(2)]
           saveSetting(STORAGE_KEYS.QUALITY_ORDER, newOrder)
           order = newOrder
-          url = sources[chosenTag]
+          selected = sources[chosenTag]
         }
       } else {
         if (!askQuality) throw new Error("askQuality callback not provided")
         chosenTag = await askQuality(tags)
-        url = sources[chosenTag]
+        selected = sources[chosenTag]
       }
     }
 
+    const url = streamUrl(selected)
+    const referer = selected?.referer || "https://kwik.cx/"
+    if (!url) continue
+
     const number = Number(entry.episode) + i
-    links.push(`python3 hls_fix.py "${url}"`)
-    links.push(`ffmpeg -allowed_extensions ALL -i hls_fixed/local.m3u8 -c copy ~/Documents/${escapedName}/${escapedName}\\ -\\ ${number}.mp4`)
+    links.push(...buildHlsDownloadCommands(url, referer, escapedName, number))
   }
 
   const episodeString =

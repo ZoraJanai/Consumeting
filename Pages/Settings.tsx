@@ -9,7 +9,7 @@ import {
   refreshAnimepaheSession,
 } from "../scripts/animepaheSession"
 
-type VideoPlayerType = "nPlayer" | "Outplayer"
+type VideoPlayerType = "nPlayer" | "Outplayer" | "Safari"
 type ProviderType = "Anilist" | "Animepahe"
 
 import { STORAGE_KEYS, loadSetting, saveSetting } from "../scripts/storage"
@@ -220,6 +220,7 @@ export function SettingsPage() {
             >
               <Text tag={"nPlayer"}>nPlayer</Text>
               <Text tag={"Outplayer"}>Outplayer</Text>
+              <Text tag={"Safari"}>Safari</Text>
             </Picker>
           </HStack>
         </Section>

@@ -16,7 +16,9 @@ declare const WebViewController: {
   new (): any
 }
 
-const HARDWIRED_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1"
+/** iPhone Safari UA — must match WebView; desktop Chrome loops CF captcha. */
+export const HARDWIRED_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1"
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
@@ -955,15 +957,16 @@ export async function refreshAnimepaheSession(): Promise<boolean> {
 
 /** Return saved kwik.cx CF cookies + User-Agent from storage. */
 export function getStoredKwikCookies(): { cookies: string; userAgent: string } {
+  const userAgent = loadSetting(STORAGE_KEYS.KWIK_USER_AGENT, "") || HARDWIRED_UA
   return {
     cookies: loadSetting(STORAGE_KEYS.KWIK_COOKIES, ""),
-    userAgent: loadSetting(STORAGE_KEYS.KWIK_USER_AGENT, ""),
+    userAgent,
   }
 }
 
 function saveKwikCookies(cookies: string, userAgent: string): void {
   saveSetting(STORAGE_KEYS.KWIK_COOKIES, cookies)
-  if (userAgent) saveSetting(STORAGE_KEYS.KWIK_USER_AGENT, userAgent)
+  saveSetting(STORAGE_KEYS.KWIK_USER_AGENT, userAgent || HARDWIRED_UA)
 }
 
 /**
@@ -1041,5 +1044,78 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
 
   saveKwikCookies(result.cookies, result.userAgent)
   return result
+}
+
+/**
+ * Open ONLY the kwik.cx/e/... Plyr embed (Settings → Safari player).
+ *
+ * Cold-opening the embed has no Referer and will not boot. Mirror the Mac test:
+ * load the animepahe play page first, then location.href → kwik (Referer kept).
+ * Uses an in-app WebView (Safari WebKit) — Safari.app cannot be JS-driven from Scripting.
+ */
+export async function presentKwikEmbedPlayer(
+  playPageUrl: string,
+  kwikEmbedUrl: string,
+): Promise<void> {
+  if (!kwikEmbedUrl.includes("kwik.cx/e/")) {
+    throw new Error("[kwikPlayer] expected kwik.cx/e/... embed URL")
+  }
+
+  const controller = new WebViewController()
+  controller.setCustomUserAgent(HARDWIRED_UA)
+
+  try {
+    console.log("[kwikPlayer] loading play page for Referer:", playPageUrl.slice(0, 80))
+    await controller.loadURL(playPageUrl)
+    try {
+      if (controller.waitForLoad) await controller.waitForLoad()
+    } catch {
+      /* ignore */
+    }
+
+    // Wait until play page is past CF (resolution menu) or timeout
+    const deadline = Date.now() + 25000
+    const evalJs = async (script: string) => {
+      if (typeof controller.evaluateJavaScript === "function") {
+        return controller.evaluateJavaScript(script)
+      }
+      return enqueueWebViewScript(controller, script)
+    }
+
+    while (Date.now() < deadline) {
+      try {
+        const ready = await evalJs(
+          "return !!(document.querySelector('button.dropdown-item[data-src]') || document.querySelector('#resolutionMenu'))",
+        )
+        if (ready) break
+      } catch {
+        /* page may still be loading */
+      }
+      await new Promise<void>(r => setTimeout(r, 700))
+    }
+
+    console.log("[kwikPlayer] jumping to kwik embed:", kwikEmbedUrl.slice(0, 80))
+    try {
+      await evalJs(
+        "window.location.href = " + JSON.stringify(kwikEmbedUrl) + "; return true",
+      )
+    } catch (e) {
+      console.log("[kwikPlayer] JS jump failed, loadURL fallback:", String(e))
+      await controller.loadURL(kwikEmbedUrl)
+    }
+
+    await new Promise<void>(r => setTimeout(r, 1000))
+
+    await controller.present({
+      fullscreen: true,
+      navigationTitle: "Kwik",
+    })
+  } finally {
+    try {
+      if (typeof controller.dispose === "function") controller.dispose()
+    } catch {
+      /* ignore */
+    }
+  }
 }
 

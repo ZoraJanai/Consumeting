@@ -1,3 +1,12 @@
 /backup
 hls_fix.py
 /hls_fixed
+/hls_fixed_test
+kwik_session.json
+.venv/
+*.pyc
+kwik_embed_debug.html
+play_page_debug.html
+requirements-test.txt
+test_kwik_hls.py
+test_safari_player.py
