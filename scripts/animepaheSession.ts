@@ -968,6 +968,106 @@ export function getStoredKwikCookies(): { cookies: string; userAgent: string } {
 function saveKwikCookies(cookies: string, userAgent: string): void {
   saveSetting(STORAGE_KEYS.KWIK_COOKIES, cookies)
   saveSetting(STORAGE_KEYS.KWIK_USER_AGENT, userAgent || HARDWIRED_UA)
+  console.log(
+    "[kwikCF] saved cookies len:",
+    cookies.length,
+    "has cf_clearance:",
+    cookies.includes("cf_clearance="),
+  )
+}
+
+/**
+ * Read kwik.cx cookies from a WebView the same way animepahe does:
+ * getAllCookies + getCookies(url) + document.cookie, then host filter.
+ * Strict domain === "kwik.cx" alone often misses cookies with empty domain.
+ */
+async function captureKwikCookieHeader(
+  controller: any,
+): Promise<{ cookies: string; userAgent: string } | null> {
+  if (!controller) return null
+  const collected: WebCookie[] = []
+
+  if (typeof controller.getAllCookies === "function") {
+    try {
+      const all: WebCookie[] = (await controller.getAllCookies()) || []
+      if (all.length) collected.push.apply(collected, all)
+      console.log("[kwikCF] getAllCookies:", all.length)
+    } catch (e) {
+      console.log("[kwikCF] getAllCookies failed:", String(e))
+    }
+  }
+
+  if (typeof controller.getCookies === "function") {
+    const urls = ["https://kwik.cx/", "https://kwik.cx", "https://www.kwik.cx/"]
+    for (let i = 0; i < urls.length; i++) {
+      try {
+        const matched: WebCookie[] = (await controller.getCookies(urls[i])) || []
+        if (matched.length) {
+          collected.push.apply(collected, matched)
+          console.log("[kwikCF] getCookies", urls[i], matched.length)
+        }
+      } catch (e) {
+        console.log("[kwikCF] getCookies failed:", urls[i], String(e))
+      }
+    }
+  }
+
+  // Non-HttpOnly only — still useful for kwik_session / srv
+  try {
+    if (typeof controller.evaluateJavaScript === "function") {
+      const raw = String(
+        (await controller.evaluateJavaScript("document.cookie || ''")) || "",
+      )
+      console.log("[kwikCF] document.cookie len:", raw.length)
+      if (raw.trim()) {
+        const parts = raw.split(";")
+        for (let i = 0; i < parts.length; i++) {
+          const trimmed = parts[i].trim()
+          const eq = trimmed.indexOf("=")
+          if (eq <= 0) continue
+          collected.push({
+            name: trimmed.slice(0, eq).trim(),
+            value: trimmed.slice(eq + 1).trim(),
+            domain: "kwik.cx",
+            path: "/",
+            isSecure: true,
+            isHTTPOnly: false,
+            isSessionOnly: true,
+          })
+        }
+      }
+    }
+  } catch (e) {
+    console.log("[kwikCF] document.cookie failed:", String(e))
+  }
+
+  const filtered = filterCookiesForHost(collected, "kwik.cx")
+  const byName: Record<string, WebCookie> = {}
+  for (let i = 0; i < filtered.length; i++) {
+    const c = filtered[i]
+    if (!c.name || c.value == null || c.value === "") continue
+    byName[c.name] = c
+  }
+  const unique: WebCookie[] = []
+  for (const name in byName) unique.push(byName[name])
+
+  console.log("[kwikCF] merged cookie names:", cookieNames(unique) || "(empty)")
+  if (!unique.some(c => c.name === "cf_clearance")) return null
+
+  const cookieHeader = unique.map(c => c.name + "=" + c.value).join("; ")
+  if (!cookieHeader) return null
+
+  let userAgent = HARDWIRED_UA
+  try {
+    if (typeof controller.evaluateJavaScript === "function") {
+      userAgent = String(
+        (await controller.evaluateJavaScript("navigator.userAgent")) || HARDWIRED_UA,
+      )
+    }
+  } catch {
+    /* ignore */
+  }
+  return { cookies: cookieHeader, userAgent: userAgent || HARDWIRED_UA }
 }
 
 /**
@@ -992,7 +1092,10 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
   try {
     webViewController.setCustomUserAgent(HARDWIRED_UA)
     webViewController.clearAllCookies()
-    await webViewController.loadURL("https://kwik.cx/") } catch { /* ignore */ }
+    await webViewController.loadURL("https://kwik.cx/")
+  } catch {
+    /* ignore */
+  }
 
   // Poll cookie jar until kwik.cx cf_clearance appears
   const deadline = Date.now() + 25000
@@ -1001,27 +1104,17 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
   while (Date.now() < deadline) {
     await new Promise<void>(r => setTimeout(r, 800))
     try {
-      if (typeof webViewController.getAllCookies !== "function") break
-      const all: any[] = (await webViewController.getAllCookies()) || []
-      const kwik = all.filter((c: any) => {
-        const d = ((c.domain as string) || "").replace(/^\./, "").toLowerCase()
-        return d === "kwik.cx" || d.endsWith(".kwik.cx")
-      })
-      if (!kwik.some((c: any) => c.name === "cf_clearance")) {
-        console.log("[kwikCF] no cf_clearance yet, kwik cookie count:", kwik.length)
-        continue
+      result = await captureKwikCookieHeader(webViewController)
+      if (result) {
+        console.log(
+          "[kwikCF] cf_clearance obtained, cookies len:",
+          result.cookies.length,
+          "UA:",
+          result.userAgent.slice(0, 80),
+        )
+        break
       }
-      const cookieHeader = kwik
-        .filter((c: any) => c.name && c.value)
-        .map((c: any) => (c.name as string) + "=" + (c.value as string))
-        .join("; ")
-      let userAgent = ""
-      try {
-        userAgent = String((await enqueueWebViewScript(webViewController, "return navigator.userAgent")) || "")
-      } catch { /* ignore */ }
-      console.log("[kwikCF] cf_clearance obtained, cookies len:", cookieHeader.length, "UA:", userAgent.slice(0, 80))
-      result = { cookies: cookieHeader, userAgent }
-      break
+      console.log("[kwikCF] no cf_clearance yet")
     } catch (e) {
       console.log("[kwikCF] poll error:", String(e))
     }
@@ -1030,10 +1123,13 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
   // Navigate the WebView back to animepahe.pw so iframe injections keep working
   const baseUrl = getBaseUrl()
   console.log("[kwikCF] navigating WebView back to animepahe.pw")
-  try { 
+  try {
     webViewController.setCustomUserAgent(HARDWIRED_UA)
     webViewController.clearAllCookies()
-    await webViewController.loadURL(baseUrl + "/") } catch { /* ignore */ }
+    await webViewController.loadURL(baseUrl + "/")
+  } catch {
+    /* ignore */
+  }
   // Give the page time to settle before the next iframe injection
   await new Promise<void>(r => setTimeout(r, 3000))
   _kwikCapturing = false
@@ -1062,28 +1158,7 @@ export async function presentKwikCfCapture(): Promise<{ cookies: string; userAge
   let result: { cookies: string; userAgent: string } | null = null
   let lastError = ""
 
-  const readKwikSession = async (): Promise<{ cookies: string; userAgent: string } | null> => {
-    if (typeof controller.getAllCookies !== "function") return null
-    const all: any[] = (await controller.getAllCookies()) || []
-    const kwik = all.filter((c: any) => {
-      const d = ((c.domain as string) || "").replace(/^\./, "").toLowerCase()
-      return d === "kwik.cx" || d.endsWith(".kwik.cx")
-    })
-    if (!kwik.some((c: any) => c.name === "cf_clearance")) return null
-    const cookieHeader = kwik
-      .filter((c: any) => c.name && c.value)
-      .map((c: any) => (c.name as string) + "=" + (c.value as string))
-      .join("; ")
-    let userAgent = HARDWIRED_UA
-    try {
-      if (typeof controller.evaluateJavaScript === "function") {
-        userAgent = String((await controller.evaluateJavaScript("navigator.userAgent")) || HARDWIRED_UA)
-      }
-    } catch {
-      /* ignore */
-    }
-    return { cookies: cookieHeader, userAgent: userAgent || HARDWIRED_UA }
-  }
+  const readKwikSession = () => captureKwikCookieHeader(controller)
 
   const injectContinue = async () => {
     try {
@@ -1165,7 +1240,7 @@ export async function presentKwikCfCapture(): Promise<{ cookies: string; userAge
       if (result) saveKwikCookies(result.cookies, result.userAgent)
     }
 
-    if (!result) {
+    if (!result || !result.cookies.includes("cf_clearance=")) {
       throw new Error(lastError || "[kwikCF] kwik.cx CF clearance not obtained")
     }
     return result
@@ -1185,17 +1260,25 @@ export async function ensureKwikCookiesForDownload(
 ): Promise<{ cookies: string; userAgent: string }> {
   const existing = getStoredKwikCookies()
   if (!forceRefresh && existing.cookies.includes("cf_clearance=")) {
-    console.log("[kwikCF] reusing stored kwik cookies")
+    console.log("[kwikCF] reusing stored kwik cookies, len:", existing.cookies.length)
     return existing
   }
   // Prefer dedicated sheet (works even with no animepahe WebView session)
   try {
-    return await presentKwikCfCapture()
+    const got = await presentKwikCfCapture()
+    if (!got.cookies.includes("cf_clearance=")) {
+      throw new Error("[kwikCF] capture returned empty / missing cf_clearance")
+    }
+    return got
   } catch (e) {
     console.log("[kwikCF] sheet capture failed:", String(e))
     // Fallback: background session WebView if alive
     if (webViewController) {
-      return await captureKwikCookies()
+      const got = await captureKwikCookies()
+      if (!got.cookies.includes("cf_clearance=")) {
+        throw new Error("[kwikCF] fallback capture missing cf_clearance")
+      }
+      return got
     }
     throw e
   }

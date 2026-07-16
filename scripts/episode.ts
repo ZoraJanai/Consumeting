@@ -418,29 +418,57 @@ export async function getEpisode(
 }
 
 export function shellWriteJsonFile(filename: string, payload: object): string {
-  // Heredoc — avoids giant base64 one-liners that ashell/line-wrap corrupts
+  // Single-line python write — ashell does not reliably run shell heredocs, which
+  // produced empty kwik_session.json even when cookies were captured.
   const json = JSON.stringify(payload)
-  return [
-    `cat > ${shellQuote(filename)} <<'CONSUMETING_JSON'`,
-    json,
-    "CONSUMETING_JSON",
-  ].join("\n")
+  const b64 =
+    typeof btoa === "function"
+      ? btoa(unescape(encodeURIComponent(json)))
+      : ""
+  if (!b64) {
+    throw new Error("[kwikCF] btoa unavailable — cannot encode session for ashell")
+  }
+  const py =
+    "import base64;open(" +
+    JSON.stringify(filename) +
+    ',"wb").write(base64.b64decode(' +
+    JSON.stringify(b64) +
+    "))"
+  return `python3 -c ${shellQuote(py)}`
 }
 
-/** Fresh kwik_session.json shell block for ashell (call after ensureKwikCookiesForDownload). */
-export function buildKwikSessionShellWrite(): string {
-  const kwikSession = getStoredKwikCookies()
+/**
+ * Fresh kwik_session.json shell block for ashell.
+ * Pass the session returned by ensureKwikCookiesForDownload — do not rely on
+ * a second Storage read (that was writing empty cookies).
+ */
+export function buildKwikSessionShellWrite(session?: {
+  cookies: string
+  userAgent: string
+}): string {
+  const kwikSession = session || getStoredKwikCookies()
+  const cookies = (kwikSession.cookies || "").trim()
+  if (!cookies.includes("cf_clearance=")) {
+    throw new Error(
+      "[kwikCF] refusing to write empty kwik_session.json (missing cf_clearance)",
+    )
+  }
+  console.log("[kwikCF] shell write cookies len:", cookies.length)
   return shellWriteJsonFile("kwik_session.json", {
-    cookies: kwikSession.cookies || "",
+    cookies,
     userAgent: kwikSession.userAgent || HARDWIRED_UA,
   })
 }
 
-/** Strip prior kwik_session heredoc blocks from a queue links list. */
+/** Strip prior kwik_session write commands from a queue links list. */
 export function stripKwikSessionWrites(links: string[]): string[] {
   const out: string[] = []
   let skipping = false
   for (const line of links) {
+    // Current: python3 -c '...kwik_session.json...'
+    if (line.includes("kwik_session.json") && line.includes("python3 -c")) {
+      continue
+    }
     // Multi-line heredoc stored as one string with embedded \n
     if (line.includes("kwik_session.json") && line.includes("CONSUMETING_JSON")) {
       continue
@@ -512,13 +540,16 @@ export async function downloadEpisode(
 
   // Fresh kwik CF for hls_fix.py cookies (presents sheet if needed)
   console.log("[downloadEpisode] ensuring kwik.cx CF session for hls_fix.py")
+  let kwikSession: { cookies: string; userAgent: string }
   try {
-    await ensureKwikCookiesForDownload(false)
+    kwikSession = await ensureKwikCookiesForDownload(false)
   } catch (e) {
-    console.log("[downloadEpisode] kwik capture failed (Referer alone may still work):", String(e))
+    hideOverlay()
+    throw new Error(
+      "kwik.cx CF capture failed — downloads need cookies for uwucdn: " + String(e),
+    )
   }
-
-  links.push(buildKwikSessionShellWrite())
+  links.push(buildKwikSessionShellWrite(kwikSession))
 
   // Phase 1: fetch all episode sources (gated to avoid rate limits)
   const allSources: QualityMap[] = new Array(total)

@@ -169,10 +169,14 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
     if (!items.length) return
 
     showOverlay()
+    let sessionWrite = ""
     try {
       // Fresh kwik.cx CF WebView (sheet) — animepahe verify alone is not enough for CDN
       console.log("[Queue] capturing kwik.cx session before ashell")
-      await ensureKwikCookiesForDownload(true)
+      const kwikSession = await ensureKwikCookiesForDownload(true)
+      // Use the returned session — re-reading Storage was writing empty cookies
+      sessionWrite = buildKwikSessionShellWrite(kwikSession)
+      console.log("[Queue] kwik session ready, cookies len:", kwikSession.cookies.length)
     } catch (e) {
       hideOverlay()
       console.log("[Queue] kwik CF capture failed:", String(e))
@@ -188,7 +192,6 @@ export function QueuePage({ onBadgeChange }: { onBadgeChange?: (n: number) => vo
     }
     hideOverlay()
 
-    const sessionWrite = buildKwikSessionShellWrite()
     const body = items
       .flatMap(item => {
         const rest = stripKwikSessionWrites(item.links || [])
