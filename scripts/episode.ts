@@ -380,15 +380,12 @@ export async function getEpisode(
     selected = sources[pickedTag]
   }
 
-  hideOverlay()
-
-  const openUrl = streamUrl(selected)
-  if (!openUrl) throw new Error("No stream URL selected")
-
   if (player === "Safari") {
     // Kwik embed only — play page is a Referer stepping stone (see test_safari_player.py)
+    // Keep waiting overlay until the embed WebView is ready to present
     const kwikEmbed = selected?.referer || ""
     if (!kwikEmbed.includes("kwik.cx/e/")) {
+      hideOverlay()
       throw new Error(
         "Safari player needs a kwik.cx/e/... embed URL (use direct animepahe mode, not API-only)",
       )
@@ -397,6 +394,9 @@ export async function getEpisode(
     console.log("[getEpisode] Safari → kwik embed:", kwikEmbed.slice(0, 80))
     await presentKwikEmbedPlayer(playPageUrl, kwikEmbed)
   } else {
+    hideOverlay()
+    const openUrl = streamUrl(selected)
+    if (!openUrl) throw new Error("No stream URL selected")
     console.log("[getEpisode] m3u8:", openUrl.substring(0, 100))
     const finalUrl = player === "nPlayer" ? "-" + openUrl : "://" + openUrl
     console.log("[getEpisode] opening:", (player + finalUrl).substring(0, 100))

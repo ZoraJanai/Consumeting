@@ -1,5 +1,6 @@
 import { fetch } from "scripting"
 import { loadSetting, saveSetting, STORAGE_KEYS } from "./storage"
+import { hideOverlay } from "../Pages/Loading"
 
 type WebCookie = {
   name: string
@@ -1051,7 +1052,8 @@ export async function captureKwikCookies(): Promise<{ cookies: string; userAgent
  *
  * Cold-opening the embed has no Referer and will not boot. Mirror the Mac test:
  * load the animepahe play page first, then location.href → kwik (Referer kept).
- * Uses an in-app WebView (Safari WebKit) — Safari.app cannot be JS-driven from Scripting.
+ * After the embed is ready: click Plyr Play, then Fullscreen.
+ * Waiting overlay stays up until the WebView is ready to present.
  */
 export async function presentKwikEmbedPlayer(
   playPageUrl: string,
@@ -1063,6 +1065,50 @@ export async function presentKwikEmbedPlayer(
 
   const controller = new WebViewController()
   controller.setCustomUserAgent(HARDWIRED_UA)
+  try {
+    if ("mediaPlaybackRequiresUserAction" in controller) {
+      controller.mediaPlaybackRequiresUserAction = false
+    }
+    if ("allowsInlineMediaPlayback" in controller) {
+      controller.allowsInlineMediaPlayback = true
+    }
+    // Kill white letterboxing around the embed
+    if ("backgroundColor" in controller) controller.backgroundColor = "black"
+    if ("opaque" in controller) controller.opaque = true
+  } catch {
+    /* ignore */
+  }
+
+  const evalJs = async (script: string) => {
+    if (typeof controller.evaluateJavaScript === "function") {
+      return controller.evaluateJavaScript(script)
+    }
+    return enqueueWebViewScript(controller, script)
+  }
+
+  // Paint page chrome black (kwik/Plyr leave white gutters otherwise)
+  const paintBlack = `(() => {
+  var css = [
+    'html,body{background:#000!important;margin:0!important;padding:0!important;overflow:hidden!important;width:100%!important;height:100%!important}',
+    'body > *{background-color:transparent}',
+    '.plyr,.plyr__video-wrapper,.plyr__poster,.embed-responsive,.container,.wrapper,#player,main,header,footer,nav{background:#000!important;border:none!important;box-shadow:none!important}',
+    'video{background:#000!important;object-fit:contain}',
+    '.plyr--video{background:#000!important}',
+    '.plyr__control--overlaid{background:rgba(0,0,0,.55)!important}'
+  ].join('');
+  var s = document.getElementById('__kwik_black');
+  if (!s) {
+    s = document.createElement('style');
+    s.id = '__kwik_black';
+    (document.head || document.documentElement).appendChild(s);
+  }
+  s.textContent = css;
+  try {
+    document.documentElement.style.background = '#000';
+    document.body.style.background = '#000';
+  } catch (e) {}
+  return true;
+})()`
 
   try {
     console.log("[kwikPlayer] loading play page for Referer:", playPageUrl.slice(0, 80))
@@ -1074,15 +1120,8 @@ export async function presentKwikEmbedPlayer(
     }
 
     // Wait until play page is past CF (resolution menu) or timeout
-    const deadline = Date.now() + 25000
-    const evalJs = async (script: string) => {
-      if (typeof controller.evaluateJavaScript === "function") {
-        return controller.evaluateJavaScript(script)
-      }
-      return enqueueWebViewScript(controller, script)
-    }
-
-    while (Date.now() < deadline) {
+    const playDeadline = Date.now() + 25000
+    while (Date.now() < playDeadline) {
       try {
         const ready = await evalJs(
           "return !!(document.querySelector('button.dropdown-item[data-src]') || document.querySelector('#resolutionMenu'))",
@@ -1104,13 +1143,113 @@ export async function presentKwikEmbedPlayer(
       await controller.loadURL(kwikEmbedUrl)
     }
 
-    await new Promise<void>(r => setTimeout(r, 1000))
+    // Re-apply black chrome + click Play → Fullscreen after Plyr mounts
+    // Play:  button.plyr__control--overlaid[data-plyr="play"]
+    // Full:  button.plyr__controls__item[data-plyr="fullscreen"]
+    const armClicks = `(() => {
+  if (window.__kwikClickArmed) return 'armed';
+  window.__kwikClickArmed = true;
+  var stage = 0;
+  var tries = 0;
+  function paint() {
+    var css = [
+      'html,body{background:#000!important;margin:0!important;padding:0!important;overflow:hidden!important;width:100%!important;height:100%!important}',
+      '.plyr,.plyr__video-wrapper,.plyr__poster,.embed-responsive,.container,#player{background:#000!important;border:none!important}',
+      'video{background:#000!important}'
+    ].join('');
+    var s = document.getElementById('__kwik_black');
+    if (!s) {
+      s = document.createElement('style');
+      s.id = '__kwik_black';
+      (document.head || document.documentElement).appendChild(s);
+    }
+    s.textContent = css;
+    try {
+      document.documentElement.style.background = '#000';
+      if (document.body) document.body.style.background = '#000';
+    } catch (e) {}
+  }
+  function playBtn() {
+    return document.querySelector('button.plyr__control--overlaid[data-plyr="play"]')
+      || document.querySelector('button[data-plyr="play"]');
+  }
+  function fsBtn() {
+    return document.querySelector('button.plyr__controls__item[data-plyr="fullscreen"]')
+      || document.querySelector('button[data-plyr="fullscreen"]');
+  }
+  paint();
+  window.__kwikClickTimer = setInterval(function () {
+    tries++;
+    paint();
+    if (tries > 50) {
+      clearInterval(window.__kwikClickTimer);
+      return;
+    }
+    var v = document.querySelector('video');
+    var playing = v && !v.paused;
+    var inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    var pb = playBtn();
+    var fb = fsBtn();
 
+    if (stage === 0) {
+      if (pb) {
+        pb.click();
+        stage = 1;
+      }
+      return;
+    }
+    if (stage === 1) {
+      if (playing || tries > 4) {
+        if (fb && !inFs) fb.click();
+        stage = 2;
+      }
+      return;
+    }
+    if (!playing && pb) pb.click();
+    if (!inFs && fb) fb.click();
+    if ((playing || tries > 12) && (inFs || tries > 15)) {
+      clearInterval(window.__kwikClickTimer);
+    }
+  }, 600);
+  return 'armed';
+})()`
+
+    const ctrlDeadline = Date.now() + 30000
+    while (Date.now() < ctrlDeadline) {
+      try {
+        await evalJs("return " + paintBlack)
+        const ready = await evalJs(
+          "return !!document.querySelector('button.plyr__control--overlaid[data-plyr=\"play\"], button[data-plyr=\"play\"]')",
+        )
+        if (ready) {
+          const armed = await evalJs("return " + armClicks)
+          console.log("[kwikPlayer] click arm:", armed)
+          await evalJs(
+            "var b=document.querySelector('button.plyr__control--overlaid[data-plyr=\"play\"]')||document.querySelector('button[data-plyr=\"play\"]'); if(b) b.click(); return !!b",
+          )
+          await new Promise<void>(r => setTimeout(r, 600))
+          await evalJs(
+            "var b=document.querySelector('button.plyr__controls__item[data-plyr=\"fullscreen\"]')||document.querySelector('button[data-plyr=\"fullscreen\"]'); if(b) b.click(); return !!b",
+          )
+          break
+        }
+      } catch (e) {
+        console.log("[kwikPlayer] controls wait:", String(e))
+      }
+      await new Promise<void>(r => setTimeout(r, 600))
+    }
+
+    // Drop app waiting spinner the moment the player sheet appears
+    hideOverlay()
     await controller.present({
       fullscreen: true,
       navigationTitle: "Kwik",
     })
+  } catch (err) {
+    hideOverlay()
+    throw err
   } finally {
+    hideOverlay()
     try {
       if (typeof controller.dispose === "function") controller.dispose()
     } catch {
