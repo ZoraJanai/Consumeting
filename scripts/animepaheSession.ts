@@ -1,6 +1,7 @@
 import { fetch } from "scripting"
 import { loadSetting, saveSetting, STORAGE_KEYS } from "./storage"
 import { hideOverlay } from "../Pages/Loading"
+import { fetchSkipTimes, SkipInterval } from "./aniskip"
 
 type WebCookie = {
   name: string
@@ -1284,280 +1285,312 @@ export async function ensureKwikCookiesForDownload(
   }
 }
 
+// ── Gesture overlay ───────────────────────────────────────────────────────────
+
 /**
- * Open ONLY the kwik.cx/e/... Plyr embed (Settings → Safari player).
+ * Build the gesture overlay script with optional AniSkip intervals inlined.
  *
- * Cold-opening the embed has no Referer and will not boot. Mirror the Mac test:
- * load the animepahe play page first, then location.href → kwik (Referer kept).
- * After the embed is ready: click Plyr Play, then Fullscreen.
- * Waiting overlay stays up until the WebView is ready to present.
+ * Screen split:  [30% dim] [40% seek / pause] [30% volume]
+ *   • Left zone  – drag ↑↓ → dark-overlay opacity (simulated brightness dimming)
+ *                  single tap → show bottom playback strip
+ *   • Middle zone – drag ←→ → seek ±90 s; single tap → toggle play/pause
+ *   • Right zone  – drag ↑↓ → video.volume
+ *                   single tap → show bottom playback strip
+ *
+ * Bottom playback strip (iOS 26 Liquid Glass):
+ *   Shows on L/R single tap. Contains seekable progress bar with OP/ED colour
+ *   markers, ⏪15 / play-pause / 15⏩ controls, and current/total time.
+ *   Auto-hides after 4 s of inactivity.
+ *
+ * AniSkip prompt: appears ~2 s before each OP/ED interval; tapping jumps to
+ *   the end of that interval.
+ *
+ * NOTE: True device brightness and system volume are inaccessible from WKWebView
+ * JS — the dark overlay and video.volume are the best available equivalents.
  */
-/**
- * Gesture-based player overlay injected into the kwik.cx embed WebView.
- *
- * Screen split:  [30% brightness] [40% seek/pause] [30% volume]
- *   • Left zone  – swipe ↑↓ adjusts CSS brightness (0.1 – 2.0)
- *   • Middle zone – horizontal swipe seeks ±90 s, tap toggles play/pause
- *   • Right zone  – swipe ↑↓ adjusts volume (0 – 1)
- *
- * Indicators: iOS 26 "Liquid Glass" style
- *   • Vertical frosted pill on the left/right edges for brightness / volume
- *   • Horizontal frosted pill at centre for seek / pause feedback
- *   • Fade out after 1.4 s of inactivity
- */
-const GESTURE_OVERLAY_JS = `
-(function () {
+function buildGestureOverlay(skipTimes: SkipInterval[]): string {
+  const skipTimesJson = JSON.stringify(skipTimes)
+  return `(function (skipTimesJson) {
   'use strict';
   if (document.getElementById('__gc_overlay')) return;
 
   var vid = document.querySelector('video');
   if (!vid) return;
 
-  /* ── hide Plyr chrome ──────────────────────────────────────────────── */
-  var hideStyle = document.createElement('style');
-  hideStyle.textContent = [
-    '.plyr__controls{opacity:0!important;pointer-events:none!important}',
-    '.plyr--paused .plyr__controls{opacity:0!important}',
-    '.plyr__control--overlaid{display:none!important}'
-  ].join('');
-  (document.head || document.documentElement).appendChild(hideStyle);
+  var skipTimes = [];
+  try { skipTimes = JSON.parse(skipTimesJson || '[]'); } catch(e) {}
 
-  /* ── shared tokens ─────────────────────────────────────────────────── */
-  var W = window.innerWidth, H = window.innerHeight;
-  window.addEventListener('resize', function () { W = window.innerWidth; H = window.innerHeight; });
+  /* hide Plyr chrome */
+  var hs = document.createElement('style');
+  hs.textContent = '.plyr__controls{opacity:0!important;pointer-events:none!important}'
+    + '.plyr--paused .plyr__controls{opacity:0!important}'
+    + '.plyr__control--overlaid{display:none!important}';
+  (document.head || document.documentElement).appendChild(hs);
 
-  /* ── overlay div (captures all touches) ───────────────────────────── */
-  var ov = document.createElement('div');
+  /* shared glass token */
+  var GLASS = 'background:rgba(28,28,30,.72);backdrop-filter:blur(40px) saturate(200%);-webkit-backdrop-filter:blur(40px) saturate(200%);border:1px solid rgba(255,255,255,.13);color:#fff;font-family:-apple-system,SF Pro Display,sans-serif;pointer-events:none;transition:opacity .18s ease;';
+
+  function mk(tag, css, parent) {
+    var e = document.createElement(tag);
+    e.style.cssText = css || '';
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  /* gesture capture overlay */
+  var ov = mk('div', 'position:fixed;inset:0;z-index:9998;touch-action:none;user-select:none;-webkit-user-select:none;', document.body);
   ov.id = '__gc_overlay';
-  Object.assign(ov.style, {
-    position: 'fixed', inset: '0', zIndex: '9998',
-    touchAction: 'none', userSelect: 'none', webkitUserSelect: 'none'
-  });
-  document.body.appendChild(ov);
 
-  /* ── iOS 26 indicator factory ──────────────────────────────────────── */
-  var GLASS = [
-    'background:rgba(28,28,30,.72)',
-    'backdrop-filter:blur(40px) saturate(200%)',
-    '-webkit-backdrop-filter:blur(40px) saturate(200%)',
-    'border:1px solid rgba(255,255,255,.14)',
-    'color:#fff',
-    "font-family:'-apple-system','SF Pro Display',sans-serif",
-    'pointer-events:none',
-    'transition:opacity .18s ease'
-  ].join(';');
+  /* screen dimmer */
+  var dimmer = mk('div', 'position:fixed;inset:0;z-index:9997;pointer-events:none;background:rgba(0,0,0,0);transition:background .08s linear;', document.body);
+  var dimLevel = 0;
+  function refreshDim() { dimmer.style.background = 'rgba(0,0,0,' + dimLevel.toFixed(3) + ')'; }
 
-  /* vertical bar (left brightness / right volume) */
-  function makeBarIndicator(side) {
-    var wrap = document.createElement('div');
-    var edgeOffset = '20px';
-    Object.assign(wrap.style, {
-      cssText: GLASS,
-      position: 'fixed',
-      top: '50%',
-      transform: 'translateY(-50%)',
-      [side === 'left' ? 'left' : 'right']: edgeOffset,
-      width: '52px',
-      height: '160px',
-      borderRadius: '26px',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'flex-end',
-      padding: '10px 0',
-      gap: '8px',
-      opacity: '0',
-      zIndex: '9999',
-      overflow: 'hidden'
-    });
-    wrap.style.cssText = [
-      'position:fixed',
-      'top:50%',
-      'transform:translateY(-50%)',
-      (side === 'left' ? 'left' : 'right') + ':20px',
-      'width:52px',
-      'height:160px',
-      'border-radius:26px',
-      'display:flex',
-      'flex-direction:column',
-      'align-items:center',
-      'justify-content:flex-end',
-      'padding:10px 0',
-      'gap:8px',
-      'opacity:0',
-      'z-index:9999',
-      'overflow:hidden',
-      GLASS
-    ].join(';');
-
-    var track = document.createElement('div');
-    Object.assign(track.style, {
-      width: '6px',
-      height: '110px',
-      background: 'rgba(255,255,255,.2)',
-      borderRadius: '3px',
-      position: 'relative',
-      marginBottom: '2px'
-    });
-    var fill = document.createElement('div');
-    Object.assign(fill.style, {
-      width: '100%',
-      background: '#fff',
-      borderRadius: '3px',
-      position: 'absolute',
-      bottom: '0',
-      left: '0',
-      transition: 'height .1s ease'
-    });
-    track.appendChild(fill);
-
-    var icon = document.createElement('div');
-    icon.style.cssText = 'font-size:20px;line-height:1;margin-bottom:4px';
-
-    wrap.appendChild(track);
-    wrap.appendChild(icon);
-    document.body.appendChild(wrap);
-    return { wrap: wrap, fill: fill, icon: icon };
+  /* side bar indicators */
+  function makeBar(side) {
+    var wrap = mk('div', GLASS + 'position:fixed;top:50%;transform:translateY(-50%);' + (side === 'left' ? 'left' : 'right') + ':18px;width:50px;height:160px;border-radius:25px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding:10px 0;gap:8px;opacity:0;z-index:9999;overflow:hidden;', document.body);
+    var track = mk('div', 'width:6px;height:108px;background:rgba(255,255,255,.18);border-radius:3px;position:relative;', wrap);
+    var fill  = mk('div', 'width:100%;background:#fff;border-radius:3px;position:absolute;bottom:0;transition:height .08s linear;', track);
+    var icon  = mk('div', 'font-size:20px;line-height:1;margin-bottom:4px;', wrap);
+    return { wrap: wrap, fill: fill, icon: icon, _t: null };
   }
-
-  /* horizontal pill (seek / pause feedback) */
-  function makePillIndicator() {
-    var el = document.createElement('div');
-    el.style.cssText = [
-      'position:fixed',
-      'top:50%',
-      'left:50%',
-      'transform:translate(-50%,-50%)',
-      'border-radius:20px',
-      'padding:14px 24px',
-      'min-width:150px',
-      'text-align:center',
-      'opacity:0',
-      'z-index:9999',
-      GLASS
-    ].join(';');
-
-    var line1 = document.createElement('div');
-    line1.style.cssText = 'font-size:28px;line-height:1;font-weight:700';
-    var line2 = document.createElement('div');
-    line2.style.cssText = 'font-size:13px;opacity:.7;margin-top:4px;font-weight:500';
-
-    el.appendChild(line1);
-    el.appendChild(line2);
-    document.body.appendChild(el);
-    return { el: el, line1: line1, line2: line2 };
-  }
-
-  var bri = makeBarIndicator('left');
-  var vol = makeBarIndicator('right');
-  var pill = makePillIndicator();
-
-  var briTimer, volTimer, pillTimer;
-
-  function showBar(bar, frac, iconText) {
-    bar.fill.style.height = (frac * 110) + 'px';
-    bar.icon.textContent = iconText;
+  var briBar = makeBar('left');
+  var volBar = makeBar('right');
+  function showBar(bar, frac, iconTxt) {
+    bar.fill.style.height = (frac * 108) + 'px';
+    bar.icon.textContent = iconTxt;
     bar.wrap.style.opacity = '1';
     clearTimeout(bar._t);
-    bar._t = setTimeout(function () { bar.wrap.style.opacity = '0'; }, 1400);
+    bar._t = setTimeout(function() { bar.wrap.style.opacity = '0'; }, 1500);
   }
 
+  /* centre pill */
+  var cp = mk('div', GLASS + 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);border-radius:20px;padding:14px 26px;min-width:140px;text-align:center;opacity:0;z-index:9999;', document.body);
+  var cpL1 = mk('div', 'font-size:30px;line-height:1;font-weight:700;', cp);
+  var cpL2 = mk('div', 'font-size:13px;opacity:.7;margin-top:4px;font-weight:500;', cp);
+  cp._t = null;
   function showPill(big, small) {
-    pill.line1.textContent = big;
-    pill.line2.textContent = small;
-    pill.el.style.opacity = '1';
-    clearTimeout(pill._t);
-    pill._t = setTimeout(function () { pill.el.style.opacity = '0'; }, 1400);
+    cpL1.textContent = big; cpL2.textContent = small;
+    cp.style.opacity = '1';
+    clearTimeout(cp._t);
+    cp._t = setTimeout(function() { cp.style.opacity = '0'; }, 1500);
   }
 
-  /* ── state ─────────────────────────────────────────────────────────── */
-  var brightness = 1.0;
-  vid.style.filter = 'brightness(1)';
-  vid.style.transition = 'filter .1s linear';
+  /* playback strip */
+  var strip = mk('div', GLASS + 'position:fixed;left:16px;right:16px;bottom:28px;border-radius:22px;padding:14px 18px 16px;display:flex;flex-direction:column;gap:10px;opacity:0;z-index:9999;pointer-events:auto;transition:opacity .22s ease,transform .22s ease;transform:translateY(12px);', document.body);
+  strip._t = null;
+  var stripVisible = false;
 
-  /* ── touch handling ─────────────────────────────────────────────────── */
+  var progRow  = mk('div', 'position:relative;height:6px;border-radius:3px;background:rgba(255,255,255,.2);cursor:pointer;', strip);
+  var progFill = mk('div', 'position:absolute;top:0;left:0;height:100%;border-radius:3px;background:#fff;width:0%;', progRow);
+  var progThumb= mk('div', 'position:absolute;top:50%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 0 4px rgba(0,0,0,.4);left:0%;', progRow);
+
+  /* OP/ED colour markers on progress bar (deferred until duration known) */
+  function addSkipMarkers() {
+    var dur = vid.duration;
+    if (!dur || skipTimes.length === 0) return;
+    skipTimes.forEach(function(s) {
+      var colour = s.skipType === 'op' ? '#f5a623' : s.skipType === 'ed' ? '#7ed6df' : '#9b59b6';
+      var startPct = (s.startTime / dur * 100).toFixed(2);
+      var widthPct = ((s.endTime - s.startTime) / dur * 100).toFixed(2);
+      mk('div', 'position:absolute;top:0;height:100%;border-radius:3px;pointer-events:none;background:' + colour + ';left:' + startPct + '%;width:' + widthPct + '%;', progRow);
+    });
+  }
+  if (vid.duration) addSkipMarkers();
+  else vid.addEventListener('loadedmetadata', addSkipMarkers);
+
+  var ctrlRow = mk('div', 'display:flex;align-items:center;justify-content:space-between;', strip);
+  var tCur  = mk('div', 'font-size:13px;font-weight:600;min-width:42px;', ctrlRow);
+  var rw15  = mk('button', 'background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:4px 10px;pointer-events:auto;', ctrlRow);
+  rw15.textContent = '\\u23EA';
+  var ppBtn = mk('button', 'background:rgba(255,255,255,.15);border:none;color:#fff;font-size:26px;width:48px;height:48px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;pointer-events:auto;', ctrlRow);
+  var ff15  = mk('button', 'background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:4px 10px;pointer-events:auto;', ctrlRow);
+  ff15.textContent = '\\u23E9';
+  var tDur  = mk('div', 'font-size:13px;font-weight:600;min-width:42px;text-align:right;', ctrlRow);
+
+  function fmtT(s) {
+    s = Math.max(0, Math.round(s || 0));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  function updateStrip() {
+    if (!vid.duration) return;
+    var pct = (vid.currentTime / vid.duration * 100).toFixed(2);
+    progFill.style.width = pct + '%';
+    progThumb.style.left = pct + '%';
+    tCur.textContent = fmtT(vid.currentTime);
+    tDur.textContent = fmtT(vid.duration);
+    ppBtn.textContent = vid.paused ? '\\u25B6' : '\\u23F8';
+  }
+  function showStrip() {
+    stripVisible = true; updateStrip();
+    strip.style.opacity = '1'; strip.style.transform = 'translateY(0)';
+    clearTimeout(strip._t); strip._t = setTimeout(hideStrip, 4000);
+  }
+  function hideStrip() {
+    stripVisible = false;
+    strip.style.opacity = '0'; strip.style.transform = 'translateY(12px)';
+  }
+  function bumpStrip() {
+    if (!stripVisible) return;
+    clearTimeout(strip._t); strip._t = setTimeout(hideStrip, 4000);
+  }
+  vid.addEventListener('timeupdate', function() { if (stripVisible) updateStrip(); checkSkip(); });
+  vid.addEventListener('play',  function() { if (stripVisible) ppBtn.textContent = '\\u23F8'; });
+  vid.addEventListener('pause', function() { if (stripVisible) ppBtn.textContent = '\\u25B6'; });
+
+  rw15.addEventListener('click',  function(e) { e.stopPropagation(); vid.currentTime = Math.max(0, vid.currentTime-15); bumpStrip(); });
+  ff15.addEventListener('click',  function(e) { e.stopPropagation(); vid.currentTime = Math.min(vid.duration||0, vid.currentTime+15); bumpStrip(); });
+  ppBtn.addEventListener('click', function(e) { e.stopPropagation(); vid.paused ? vid.play() : vid.pause(); bumpStrip(); });
+
+  /* progress scrubbing */
+  var scrubbing = false;
+  progRow.addEventListener('touchstart', function(e) {
+    scrubbing = true; e.stopPropagation();
+    var r = progRow.getBoundingClientRect();
+    vid.currentTime = Math.max(0, Math.min(vid.duration||0, ((e.touches[0].clientX - r.left) / r.width) * (vid.duration||0)));
+    bumpStrip();
+  }, { passive: false });
+  progRow.addEventListener('touchmove', function(e) {
+    if (!scrubbing) return; e.stopPropagation();
+    var r = progRow.getBoundingClientRect();
+    vid.currentTime = Math.max(0, Math.min(vid.duration||0, ((e.touches[0].clientX - r.left) / r.width) * (vid.duration||0)));
+    updateStrip(); bumpStrip();
+  }, { passive: false });
+  progRow.addEventListener('touchend', function(e) { scrubbing = false; e.stopPropagation(); }, { passive: false });
+
+  /* AniSkip prompt */
+  var skipBtn = mk('div', GLASS + 'position:fixed;right:20px;bottom:120px;border-radius:24px;padding:12px 20px;font-size:16px;font-weight:600;opacity:0;z-index:10000;pointer-events:auto;cursor:pointer;transition:opacity .22s ease;', document.body);
+  skipBtn._t = null; var _activeSkip = null;
+  function checkSkip() {
+    var t = vid.currentTime;
+    for (var i = 0; i < skipTimes.length; i++) {
+      var s = skipTimes[i];
+      if (t >= s.startTime - 2 && t < s.endTime) {
+        if (_activeSkip !== s) {
+          _activeSkip = s;
+          skipBtn.textContent = (s.skipType === 'op' ? 'Skip Opening' : s.skipType === 'ed' ? 'Skip Ending' : 'Skip Recap') + '  \\u2192';
+          skipBtn.style.opacity = '1';
+          clearTimeout(skipBtn._t);
+          skipBtn._t = setTimeout(function() { skipBtn.style.opacity='0'; _activeSkip=null; }, 6000);
+        }
+        return;
+      }
+    }
+    if (_activeSkip) { skipBtn.style.opacity='0'; _activeSkip=null; }
+  }
+  skipBtn.addEventListener('click', function(e) {
+    if (_activeSkip) { vid.currentTime = _activeSkip.endTime; skipBtn.style.opacity='0'; _activeSkip=null; }
+    e.stopPropagation();
+  });
+
+  /* touch state */
   var tSX, tSY, zone, dragging, seekBase, seekTimeBase;
-  var TAP_THRESHOLD = 12;
+  function getZone(x) { var w = window.innerWidth; return x < w*.30 ? 'L' : x < w*.70 ? 'M' : 'R'; }
+  var TAP = 12;
 
-  function getZone(x) {
-    if (x < W * 0.30) return 'L';
-    if (x < W * 0.70) return 'M';
-    return 'R';
-  }
-
-  function fmtTime(s) {
-    s = Math.max(0, Math.round(s));
-    var m = Math.floor(s / 60);
-    return m + ':' + String(s % 60).padStart(2, '0');
-  }
-
-  ov.addEventListener('touchstart', function (e) {
-    var t = e.touches[0];
-    tSX = t.clientX; tSY = t.clientY;
-    zone = getZone(tSX);
-    dragging = false;
-    seekBase = t.clientX;
-    seekTimeBase = vid.currentTime;
+  ov.addEventListener('touchstart', function(e) {
+    if (scrubbing) return;
+    var t = e.touches[0]; tSX=t.clientX; tSY=t.clientY; zone=getZone(tSX); dragging=false; seekBase=t.clientX; seekTimeBase=vid.currentTime;
     e.preventDefault();
   }, { passive: false });
 
-  ov.addEventListener('touchmove', function (e) {
-    var t = e.touches[0];
-    var dx = t.clientX - tSX;
-    var dy = t.clientY - tSY;
-    if (!dragging && (Math.abs(dx) > TAP_THRESHOLD || Math.abs(dy) > TAP_THRESHOLD)) dragging = true;
+  ov.addEventListener('touchmove', function(e) {
+    if (scrubbing) return;
+    var t = e.touches[0]; var dx=t.clientX-tSX, dy=t.clientY-tSY;
+    if (!dragging && (Math.abs(dx)>TAP || Math.abs(dy)>TAP)) dragging=true;
     if (!dragging) { e.preventDefault(); return; }
 
     if (zone === 'L') {
-      /* brightness: swipe up = brighter */
-      var db = -dy / H * 2.5;
-      brightness = Math.min(2.0, Math.max(0.1, brightness + db));
-      vid.style.filter = 'brightness(' + brightness + ')';
-      tSY = t.clientY;
-      var bFrac = (brightness - 0.1) / 1.9;
-      var bIcon = brightness < 0.5 ? '🌑' : brightness < 1.0 ? '🌤' : brightness < 1.5 ? '☀️' : '🔆';
-      showBar(bri, bFrac, bIcon);
-
+      dimLevel = Math.max(0, Math.min(0.85, dimLevel + (-dy / window.innerHeight * 1.5)));
+      refreshDim(); tSY = t.clientY;
+      var frac = dimLevel / 0.85;
+      showBar(briBar, 1-frac, frac<.2?'\\uD83D\\uDD06':frac<.5?'\\u2600\\uFE0F':frac<.75?'\\uD83C\\uDF24':'\\uD83C\\uDF11');
     } else if (zone === 'R') {
-      /* volume: swipe up = louder */
-      var dv = -dy / H * 1.5;
-      vid.volume = Math.min(1, Math.max(0, vid.volume + dv));
+      vid.volume = Math.min(1, Math.max(0, vid.volume + (-dy / window.innerHeight * 1.5)));
       tSY = t.clientY;
-      var vFrac = vid.volume;
-      var vIcon = vid.volume === 0 ? '🔇' : vid.volume < 0.4 ? '🔈' : vid.volume < 0.8 ? '🔉' : '🔊';
-      showBar(vol, vFrac, vIcon);
-
+      var vf = vid.volume;
+      showBar(volBar, vf, vf===0?'\\uD83D\\uDD07':vf<.4?'\\uD83D\\uDD08':vf<.8?'\\uD83D\\uDD09':'\\uD83D\\uDD0A');
     } else {
-      /* seek: left/right swipe from touch start */
-      var seekDelta = (t.clientX - seekBase) / W * 90;
-      var dest = Math.min(vid.duration || 0, Math.max(0, seekTimeBase + seekDelta));
+      var sd = (t.clientX - seekBase) / window.innerWidth * 90;
+      var dest = Math.min(vid.duration||0, Math.max(0, seekTimeBase+sd));
       vid.currentTime = dest;
-      var arrow = seekDelta >= 0 ? '+' + Math.round(seekDelta) + 's' : Math.round(seekDelta) + 's';
-      showPill(fmtTime(dest), arrow + '  /  ' + fmtTime(vid.duration));
+      showPill(fmtT(dest), (sd>=0?'+':'')+Math.round(sd)+'s  /  '+fmtT(vid.duration));
     }
     e.preventDefault();
   }, { passive: false });
 
-  ov.addEventListener('touchend', function (e) {
-    if (!dragging && zone === 'M') {
-      if (vid.paused) { vid.play(); showPill('▶', 'Play'); }
-      else           { vid.pause(); showPill('⏸', 'Pause'); }
+  ov.addEventListener('touchend', function(e) {
+    if (scrubbing) return;
+    if (!dragging) {
+      if (zone === 'M') {
+        vid.paused ? vid.play() : vid.pause();
+        showPill(vid.paused ? '\\u25B6' : '\\u23F8', vid.paused ? 'Play' : 'Pause');
+      } else {
+        showStrip();
+      }
     }
     dragging = false;
     e.preventDefault();
   }, { passive: false });
 
-  console.log('[gcOverlay] gesture controls active');
-})();
-`
+  console.log('[gcOverlay] active — skipTimes:', skipTimes.length);
+})(${skipTimesJson});`
+}
+
+/**
+ * Open the kwik.cx/e/... Plyr embed in a WebView (Settings → player test,
+ * or inline episode playback).
+ *
+ * Cold-opening the embed without a Referer causes a blank page. We load the
+ * animepahe play-page first so the browser Referer is set, then navigate to
+ * the kwik embed via JS.  After Plyr is running we inject the gesture overlay.
+ *
+ * @param malId         MAL ID for AniSkip. Supply this OR animeName — not both.
+ * @param animeName     Anime title for auto-resolution to MAL ID via AniList.
+ *                      Result is cached so AniList is only called once per title.
+ * @param episodeNumber 1-based episode number (required for AniSkip).
+ */
+
+/** Cache: anime title → MAL ID (undefined = looked up but not found) */
+const _malIdCache = new Map<string, number | undefined>()
 
 export async function presentKwikEmbedPlayer(
-  playPageUrl: string,
-  kwikEmbedUrl: string,
+  playPageUrl:    string,
+  kwikEmbedUrl:   string,
   navigationTitle?: string,
+  malId?:          number,
+  episodeNumber?:  number,
+  animeName?:      string,
 ): Promise<void> {
   if (!kwikEmbedUrl.includes("kwik.cx/e/")) {
     throw new Error("[kwikPlayer] expected kwik.cx/e/... embed URL")
+  }
+
+  // Auto-resolve MAL ID from anime title if not explicitly provided
+  if (!malId && animeName && episodeNumber) {
+    const cached = _malIdCache.get(animeName)
+    if (cached !== undefined) {
+      malId = cached
+    } else {
+      try {
+        const { getIdMalByTitle } = await import("./aniskip")
+        const resolved = await getIdMalByTitle(animeName)
+        _malIdCache.set(animeName, resolved ?? undefined)
+        if (resolved) malId = resolved
+      } catch (e) {
+        console.warn("[kwikPlayer] MAL ID lookup failed (non-fatal):", String(e))
+      }
+    }
+  }
+
+  // Fetch AniSkip intervals before opening WebView (best-effort, never throws)
+  let skipTimes: SkipInterval[] = []
+  if (malId && episodeNumber) {
+    try {
+      skipTimes = await fetchSkipTimes(malId, episodeNumber)
+    } catch (e) {
+      console.warn("[kwikPlayer] AniSkip fetch failed (non-fatal):", String(e))
+    }
   }
 
   const controller = new WebViewController()
@@ -1569,7 +1602,6 @@ export async function presentKwikEmbedPlayer(
     if ("allowsInlineMediaPlayback" in controller) {
       controller.allowsInlineMediaPlayback = true
     }
-    // Kill white letterboxing around the embed
     if ("backgroundColor" in controller) controller.backgroundColor = "black"
     if ("opaque" in controller) controller.opaque = true
   } catch {
@@ -1583,7 +1615,7 @@ export async function presentKwikEmbedPlayer(
     return enqueueWebViewScript(controller, script)
   }
 
-  // Paint page chrome black (kwik/Plyr leave white gutters otherwise)
+  // Paint page chrome black
   const paintBlack = `(() => {
   var css = [
     'html,body{background:#000!important;margin:0!important;padding:0!important;overflow:hidden!important;width:100%!important;height:100%!important}',
@@ -1600,10 +1632,7 @@ export async function presentKwikEmbedPlayer(
     (document.head || document.documentElement).appendChild(s);
   }
   s.textContent = css;
-  try {
-    document.documentElement.style.background = '#000';
-    document.body.style.background = '#000';
-  } catch (e) {}
+  try { document.documentElement.style.background='#000'; document.body.style.background='#000'; } catch(e) {}
   return true;
 })()`
 
@@ -1616,7 +1645,6 @@ export async function presentKwikEmbedPlayer(
       /* ignore */
     }
 
-    // Wait until play page is past CF (resolution menu) or timeout
     const playDeadline = Date.now() + 25000
     while (Date.now() < playDeadline) {
       try {
@@ -1640,7 +1668,6 @@ export async function presentKwikEmbedPlayer(
       await controller.loadURL(kwikEmbedUrl)
     }
 
-    // One-shot: paint black, click overlaid Play once, then Fullscreen once
     const ctrlDeadline = Date.now() + 30000
     while (Date.now() < ctrlDeadline) {
       try {
@@ -1658,11 +1685,10 @@ export async function presentKwikEmbedPlayer(
             "var b=document.querySelector('button.plyr__controls__item[data-plyr=\"fullscreen\"]')||document.querySelector('button[data-plyr=\"fullscreen\"]'); if(b) b.click(); return !!b",
           )
           console.log("[kwikPlayer] play + fullscreen clicked once")
-          // Inject gesture overlay after Plyr is running
           try {
             await new Promise<void>(r => setTimeout(r, 800))
-            await evalJs(GESTURE_OVERLAY_JS)
-            console.log("[kwikPlayer] gesture overlay injected")
+            await evalJs(buildGestureOverlay(skipTimes))
+            console.log("[kwikPlayer] gesture overlay injected — skipTimes:", skipTimes.length)
           } catch (ge) {
             console.log("[kwikPlayer] overlay inject failed (non-fatal):", String(ge))
           }
@@ -1674,7 +1700,6 @@ export async function presentKwikEmbedPlayer(
       await new Promise<void>(r => setTimeout(r, 600))
     }
 
-    // Drop app waiting spinner the moment the player sheet appears
     hideOverlay()
     await controller.present({
       fullscreen: true,
@@ -1692,4 +1717,3 @@ export async function presentKwikEmbedPlayer(
     }
   }
 }
-

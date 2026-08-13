@@ -394,7 +394,7 @@ export async function getEpisode(
     const playPageUrl = getDirectBaseUrl() + "/play/" + episodeId
     const playerTitle = `${entry.name} · Ep ${index}`
     console.log("[getEpisode] Safari → kwik embed:", kwikEmbed.slice(0, 80))
-    await presentKwikEmbedPlayer(playPageUrl, kwikEmbed, playerTitle)
+    await presentKwikEmbedPlayer(playPageUrl, kwikEmbed, playerTitle, undefined, index, entry.name)
   } else {
     hideOverlay()
     const openUrl = streamUrl(selected)
