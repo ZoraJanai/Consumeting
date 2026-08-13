@@ -6,6 +6,7 @@ import {
 import {
   clearStoredSession,
   isSessionReady,
+  presentKwikEmbedPlayer,
   refreshAnimepaheSession,
 } from "../scripts/animepaheSession"
 
@@ -171,6 +172,12 @@ export function SettingsPage() {
     setSessionActive(false)
   }
 
+  async function testGesturePlayer() {
+    const PLAY_PAGE = "https://animepahe.pw/play/543a863c-810e-731e-34f0-b2fb125c4da4/f64b17e345d1e97a7"
+    const KWIK_EMBED = "https://kwik.cx/e/YTOeTqn5zcgv"
+    await presentKwikEmbedPlayer(PLAY_PAGE, KWIK_EMBED, "Gesture Player Test")
+  }
+
   async function editHlsWorkers() {
     const input = await Dialog.prompt({
       title: "HLS workers",
@@ -262,6 +269,13 @@ export function SettingsPage() {
             title="Clear Animepahe session"
             role="destructive"
             action={clearAnimepaheSession}
+          />
+        </Section>
+
+        <Section header={<Text>Player Test</Text>}>
+          <Button
+            title={"🎮  Test Gesture Player"}
+            action={testGesturePlayer}
           />
         </Section>
       </List>
